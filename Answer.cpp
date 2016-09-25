@@ -25,12 +25,6 @@ template <typename T> T input(istream & in) { T a; in >> a; return a; }
 const int dy[] = { -1, 1, 0, 0 };
 const int dx[] = { 0, 0, 1, -1 };
 bool is_on_field(int y, int x, int h, int w) { return 0 <= y and y < h and 0 <= x and x < w; }
-int randint(int a, int b) {
-    static random_device device;
-    static default_random_engine engine(device());
-    uniform_int_distribution<int> dist(a, b);
-    return dist(engine);
-}
 
 struct config_t {
     int height, width;
@@ -133,15 +127,32 @@ entity_t *find_entity(vector<entity_t> & entities, int type, int owner) {
     }
     return nullptr;
 }
+output_t default_output(entity_t const & self) {
+    output_t output = {};
+    output.command = CMD_MOVE;
+    output.y = self.y;
+    output.x = self.x;
+    return output;
+}
 
 class AI {
+private:
     config_t config;
     vector<turn_t> turns; // history
     turn_t turn; // current
     vector<output_t> outputs;
 
+private:
+    default_random_engine engine;
+    int randint(int a, int b) {
+        uniform_int_distribution<int> dist(a, b);
+        return dist(engine);
+    }
+
 public:
     AI(config_t const & a_config) {
+        random_device device;
+        engine = default_random_engine(device());
         config = a_config;
     }
     output_t think(turn_t const & a_turn) {
@@ -158,19 +169,24 @@ public:
         vector<vector<int> > breakable = breakable_boxes(self.params.player.range, box);
 
         // construct output
-        output_t output = {};
-        output.command = CMD_MOVE;
-        if (self.params.player.count >= 1 and breakable[self.y][self.x] >= 1) {
-            output.command = CMD_BOMB;
+        output_t output = default_output(self);
+        vector<int> dirs { 0, 1, 2, 3 };
+        whole(shuffle, dirs, engine);
+        for (int i : dirs) {
+            int ny = self.y + dy[i];
+            int nx = self.x + dx[i];
+            if (not is_on_field(ny, nx, height, width)) continue;
+            if (breakable[self.y][self.x] == 0 or breakable[self.y][self.x] <= breakable[ny][nx]) {
+                output.y = ny;
+                output.x = nx;
+            }
         }
-        output.y = self.y;
-        output.x = self.x;
-        int i = randint(0, 4-1);
-        int ny = self.y + dy[i];
-        int nx = self.x + dx[i];
-        if (is_on_field(ny, nx, height, width)) {
-            output.y = ny;
-            output.x = nx;
+        if (self.params.player.count >= 1 and breakable[self.y][self.x] >= 1) {
+            if (breakable[output.y][output.x] > breakable[self.y][self.x]) {
+                // cancel
+            } else {
+                output.command = CMD_BOMB;
+            }
         }
 
         // return
