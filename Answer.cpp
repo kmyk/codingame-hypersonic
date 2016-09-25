@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <functional>
+#include <sstream>
 #include <cassert>
 #define repeat(i,n) for (int i = 0; (i) < (n); ++(i))
 #define repeat_from(i,m,n) for (int i = (m); (i) < (n); ++(i))
@@ -103,16 +104,18 @@ istream & operator >> (istream & in, turn_t & a) {
     return in;
 }
 
-const int CMD_MOVE = 0;
-const int CMD_BOMB = 1;
+enum class command_t {
+    move = 0,
+    bomb = 1,
+};
 const string COMMAND_STRING[] = { "MOVE", "BOMB" };
 struct output_t {
-    int command;
+    command_t command;
     int y, x;
     string message;
 };
 ostream & operator << (ostream & out, output_t const & a) {
-    return out << COMMAND_STRING[a.command] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
+    return out << COMMAND_STRING[int(a.command)] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
 }
 
 vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<cell_t> > const & field) {
@@ -184,6 +187,23 @@ vector<vector<double> > field_potential(vector<vector<cell_t> > const & field, f
     return pot;
 }
 
+int total_bomb(int id, vector<entity_t> & entities) {
+    int placed = 0;
+    int reserved = 0;
+    for (auto & ent : entities) {
+        if (ent.type == entyty_type_t::player) {
+            if (ent.params.player.id == id) {
+                reserved += ent.params.player.count;
+            }
+        } else if (ent.type == entyty_type_t::bomb) {
+            if (ent.params.bomb.owner == id) {
+                placed += 1;
+            }
+        }
+    }
+    return placed + reserved;
+}
+
 entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, int owner) {
     for (entity_t & ent : entities) {
         if (ent.type == type and ent.params.common.owner == owner) {
@@ -194,7 +214,7 @@ entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, int owner
 }
 output_t default_output(entity_t const & self) {
     output_t output = {};
-    output.command = CMD_MOVE;
+    output.command = command_t::move;
     output.y = self.y;
     output.x = self.x;
     return output;
@@ -255,10 +275,16 @@ public:
             if (breakable[output.y][output.x] > breakable[self.y][self.x]) {
                 // cancel
             } else {
-                output.command = CMD_BOMB;
+                output.command = command_t::bomb;
             }
         }
 
+        // hint message
+        {
+            ostringstream oss;
+            oss << "R" << self.params.player.range << "/B" << total_bomb(config.self_id, turn.entities);;
+            output.message = oss.str();
+        }
         // return
         outputs.push_back(output);
         return output;
