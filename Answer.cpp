@@ -183,14 +183,14 @@ vector<vector<cell_t> > remove_ineffective_things(vector<vector<cell_t> > const 
     }
     return nfield;
 }
-vector<vector<double> > field_potential(vector<vector<cell_t> > const & field, function<double (cell_t, int)> f) {
+vector<vector<double> > boxes_potential(vector<vector<cell_t> > const & field, function<double (cell_t, int)> f) {
     int h = field.size(), w = field.front().size();
     vector<vector<double> > pot = vectors(double(), h, w);
     repeat (y,h) {
         repeat (x,w) if (field[y][x] == cell_t::empty) {
             repeat (ny,h) {
-                repeat (nx,w) if (is_box(field[y][x])) {
-                    pot[y][x] += f(field[y][x], abs(ny - y) + abs(nx - x));
+                repeat (nx,w) if (is_box(field[ny][nx])) {
+                    pot[y][x] += f(field[ny][nx], abs(ny - y) + abs(nx - x));
                 }
             }
         }
@@ -247,6 +247,22 @@ vector<vector<int> > distance_field(int sy, int sx, map<point_t,entity_t> const 
     }
     return dist;
 }
+vector<vector<double> > item_potential(map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field, function<double (item_kind_t, int)> f) {
+    int h = field.size(), w = field.front().size();
+    vector<vector<double> > pot = vectors(0.0, h, w);
+    for (auto & it : ent_at) {
+        auto & ent = it.second;
+        if (ent.type == entyty_type_t::item) {
+            vector<vector<int> > dist = distance_field(ent.y, ent.x, ent_at, field);
+            repeat (y,h) {
+                repeat (x,w) if (dist[y][x] != inf) {
+                    pot[y][x] += f(ent.params.item.kind, dist[y][x]);
+                }
+            }
+        }
+    }
+    return pot;
+}
 
 vector<vector<int> > exploded_time_by(player_id_t id, map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
     int h = field.size(), w = field.front().size();
@@ -281,6 +297,14 @@ vector<vector<int> > exploded_time_by(player_id_t id, map<point_t,entity_t> cons
         }
     }
     return result;
+}
+vector<vector<int> > exploded_time_by(map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
+    int h = field.size(), w = field.front().size();
+    vector<vector<int> > a = exploded_time_by(player_id_t::id0, ent_at, field);
+    vector<vector<int> > b = exploded_time_by(player_id_t::id1, ent_at, field);
+    vector<vector<int> > c = vectors(inf, h, w);
+    repeat (y,h) repeat (x,w) c[y][x] = min(a[y][x], b[y][x]);
+    return c;
 }
 
 entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, player_id_t owner) {
@@ -335,11 +359,12 @@ public:
         vector<vector<bool> > being_broken = things_being_broken(turn.entities, field);
         vector<vector<cell_t> > effective_field = remove_ineffective_things(field, being_broken);
         vector<vector<int> > breakable = breakable_boxes(self.params.player.range, effective_field);
-        vector<vector<double> > box_potential = field_potential(effective_field, [](cell_t type, int dist) { return dist == 0 ? 4 : exp(1./dist); });
+        vector<vector<double> > box_pot = boxes_potential(effective_field, [](cell_t type, int dist) { return dist == 0 ? 3. : 1./dist; });
         map<point_t,entity_t> ent_at = entity_map(turn.entities);
         vector<vector<int> > exploded_time_self = exploded_time_by(self_id, ent_at, field);
         vector<vector<int> > exploded_time_opponent = exploded_time_by(opponent_id, ent_at, field);
         vector<vector<int> > dist_self = distance_field(self.y, self.x, ent_at, field);
+        vector<vector<double> > item_pot = item_potential(ent_at, field, [](item_kind_t kind, int dist) { return dist == 0 ? 3. : 1./dist; });
 
         // construct output
         output_t output = default_output(self);
@@ -350,22 +375,21 @@ public:
             int nx = self.x + dx[i];
             if (not is_on_field(ny, nx, height, width)) continue;
             if (field[ny][nx] != cell_t::empty) continue;
-            auto rank = [&](int y, int x) { return make_tuple(- exploded_time_opponent[y][x], breakable[y][x], box_potential[y][x]); };
+            auto rank = [&](int y, int x) { return make_tuple(exploded_time_opponent[y][x], item_pot[y][x], breakable[y][x], box_pot[y][x]); };
             if (rank(output.y, output.x) <= rank(ny, nx)) {
                 output.y = ny;
                 output.x = nx;
             }
         }
-        int item_dist = inf;
-        for (auto & ent : turn.entities) if (ent.type == entyty_type_t::item) {
-            if (dist_self[ent.y][ent.x] < item_dist) {
-                output.y = ent.y;
-                output.x = ent.x;
-            }
-        }
-        if (self.params.player.count >= 2) {
+        if (self.params.player.count >= 3 * box_pot[self.y][self.x] ) {
             output.command = command_t::bomb;
         } else if (self.params.player.count >= 1 and breakable[self.y][self.x] >= 1) {
+            if (self.params.player.count == 1 and breakable[output.y][output.x] > breakable[self.y][self.x]) {
+                // cancel
+            } else {
+                output.command = command_t::bomb;
+            }
+        } else if (self.params.player.count >= 1 and box_pot[self.y][self.x] < 0.001) {
             output.command = command_t::bomb;
         }
 
