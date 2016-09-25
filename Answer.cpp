@@ -264,21 +264,19 @@ vector<vector<double> > item_potential(map<point_t,entity_t> const & ent_at, vec
     return pot;
 }
 
-vector<vector<int> > exploded_time_by(player_id_t id, map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
+vector<vector<int> > exploded_time(map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
     int h = field.size(), w = field.front().size();
     vector<vector<int> > result = vectors(inf, h, w);
-    vector<vector<int> > used = vectors(inf, h, w);
     function<void (entity_t const &, int)> explode = [&](entity_t const & ent, int time) {
-        if (used[ent.y][ent.x] <= time) return;
-        used[ent.y][ent.x] = time;
-        if (ent.params.bomb.owner == id) setmin(result[ent.y][ent.x], time);
+        if (result[ent.y][ent.x] <= time) return;
+        result[ent.y][ent.x] = time;
         repeat (i,4) {
             repeat_from (l, 1, ent.params.bomb.range) {
                 int ny = ent.y + l*dy[i];
                 int nx = ent.x + l*dx[i];
                 if (not is_on_field(ny, nx, h, w)) continue;
                 if (field[ny][nx] == cell_t::wall) break;
-                if (ent.params.bomb.owner == id) setmin(result[ny][nx], time);
+                setmin(result[ny][nx], time);
                 if (ent_at.count(point(ny, nx))) {
                     auto & nent = ent_at.at(point(ny, nx));
                     if (nent.type == entyty_type_t::bomb and nent.params.bomb.count > time) {
@@ -297,14 +295,6 @@ vector<vector<int> > exploded_time_by(player_id_t id, map<point_t,entity_t> cons
         }
     }
     return result;
-}
-vector<vector<int> > exploded_time_by(map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
-    int h = field.size(), w = field.front().size();
-    vector<vector<int> > a = exploded_time_by(player_id_t::id0, ent_at, field);
-    vector<vector<int> > b = exploded_time_by(player_id_t::id1, ent_at, field);
-    vector<vector<int> > c = vectors(inf, h, w);
-    repeat (y,h) repeat (x,w) c[y][x] = min(a[y][x], b[y][x]);
-    return c;
 }
 
 entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, player_id_t owner) {
@@ -361,8 +351,7 @@ public:
         vector<vector<int> > breakable = breakable_boxes(self.params.player.range, effective_field);
         vector<vector<double> > box_pot = boxes_potential(effective_field, [](cell_t type, int dist) { return dist == 0 ? 3. : 1./dist; });
         map<point_t,entity_t> ent_at = entity_map(turn.entities);
-        vector<vector<int> > exploded_time_self = exploded_time_by(self_id, ent_at, field);
-        vector<vector<int> > exploded_time_opponent = exploded_time_by(opponent_id, ent_at, field);
+        vector<vector<int> > exptime = exploded_time(ent_at, field);
         vector<vector<int> > dist_self = distance_field(self.y, self.x, ent_at, field);
         vector<vector<double> > item_pot = item_potential(ent_at, field, [](item_kind_t kind, int dist) { return dist == 0 ? 3. : 1./dist; });
 
@@ -375,7 +364,11 @@ public:
             int nx = self.x + dx[i];
             if (not is_on_field(ny, nx, height, width)) continue;
             if (field[ny][nx] != cell_t::empty) continue;
-            auto rank = [&](int y, int x) { return make_tuple(exploded_time_opponent[y][x], item_pot[y][x], breakable[y][x], box_pot[y][x]); };
+            auto rank = [&](int y, int x) { return make_tuple(exptime[y][x], item_pot[y][x], breakable[y][x], box_pot[y][x]); };
+            if (exptime[self.y][self.x] and output.y == self.y and output.x == self.x) {
+                output.y = ny;
+                output.x = nx;
+            }
             if (rank(output.y, output.x) <= rank(ny, nx)) {
                 output.y = ny;
                 output.x = nx;
@@ -391,6 +384,33 @@ public:
             }
         } else if (self.params.player.count >= 1 and box_pot[self.y][self.x] < 0.001) {
             output.command = command_t::bomb;
+        }
+        if (output.command == command_t::bomb) {
+            bool escapable = false;
+            repeat (i,4) {
+                int ny = output.y + dy[i];
+                int nx = output.x + dx[i];
+                if (not is_on_field(ny, nx, height, width)) continue;
+                if (ny == self.y and nx == self.x) continue;
+                if (field[ny][nx] != cell_t::empty) continue;
+                if (ent_at.count(point(ny, nx)) and ent_at[point(ny, nx)].type == entyty_type_t::bomb) continue;
+                if (self.y != output.y or self.x != output.x) {
+                    escapable = true;
+                } else {
+                    repeat (j,4) {
+                        int nny = output.y + dy[i] + dy[j];
+                        int nnx = output.x + dx[i] + dy[j];
+                        if (not is_on_field(nny, nnx, height, width)) continue;
+                        if (nny == self.y and nnx == self.x) continue;
+                        if (field[nny][nnx] != cell_t::empty) continue;
+                        if (ent_at.count(point(nny, nnx)) and ent_at[point(nny, nnx)].type == entyty_type_t::bomb) continue;
+                        escapable = true;
+                    }
+                }
+            }
+            if (not escapable) {
+                output.command = command_t::move;
+            }
         }
 
         // hint message
