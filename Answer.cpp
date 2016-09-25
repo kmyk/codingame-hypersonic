@@ -31,12 +31,19 @@ struct point_t {
     int y, x;
 };
 
+enum class player_id_t : int {
+    id0 = 0,
+    id1 = 1,
+};
 struct config_t {
     int height, width;
-    int self_id;
+    player_id_t self_id;
 };
 istream & operator >> (istream & in, config_t & a) {
-    return in >> a.width >> a.height >> a.self_id;
+    int self_id;
+    in >> a.width >> a.height >> self_id;
+    a.self_id = player_id_t(self_id);
+    return in;
 }
 bool is_on_field(int y, int x, config_t const & g) { return is_on_field(y, x, g.height, g.width); }
 
@@ -44,9 +51,9 @@ enum class item_kind_t : int {
     extra_range = 1,
     extra_bomb = 2,
 };
-struct common_params_t { int owner, param1, param2; };
-struct player_params_t { int id, count, range; };
-struct bomb_params_t { int owner, count, range; };
+struct common_params_t { player_id_t owner; int param1, param2; };
+struct player_params_t { player_id_t id; int count, range; };
+struct bomb_params_t { player_id_t owner; int count, range; };
 struct item_params_t { int dummy1; item_kind_t kind; int dummy2; };
 union params_t {
     common_params_t common;
@@ -65,9 +72,10 @@ struct entity_t {
     params_t params;
 };
 istream & operator >> (istream & in, entity_t & a) {
-    int type;
-    in >> type >> a.params.common.owner >> a.x >> a.y >> a.params.common.param1 >> a.params.common.param2;
+    int type, owner;
+    in >> type >> owner >> a.x >> a.y >> a.params.common.param1 >> a.params.common.param2;
     a.type = entyty_type_t(type);
+    a.params.common.owner  = player_id_t(owner);
     return in;
 }
 
@@ -187,7 +195,7 @@ vector<vector<double> > field_potential(vector<vector<cell_t> > const & field, f
     return pot;
 }
 
-int total_bomb(int id, vector<entity_t> & entities) {
+int total_bomb(player_id_t id, vector<entity_t> & entities) {
     int placed = 0;
     int reserved = 0;
     for (auto & ent : entities) {
@@ -204,7 +212,7 @@ int total_bomb(int id, vector<entity_t> & entities) {
     return placed + reserved;
 }
 
-entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, int owner) {
+entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, player_id_t owner) {
     for (entity_t & ent : entities) {
         if (ent.type == type and ent.params.common.owner == owner) {
             return &ent;
@@ -247,8 +255,10 @@ public:
         // aliases
         int width = config.width;
         int height = config.height;
-        entity_t & self = *find_entity(turn.entities, entyty_type_t::player, config.self_id);
-        entity_t & opponent = *find_entity(turn.entities, entyty_type_t::player, not config.self_id);
+        player_id_t self_id = config.self_id;
+        player_id_t opponent_id = player_id_t(1 - int(self_id));
+        entity_t & self = *find_entity(turn.entities, entyty_type_t::player, self_id);
+        entity_t & opponent = *find_entity(turn.entities, entyty_type_t::player, opponent_id);
         vector<vector<cell_t> > & field = turn.field;
         // cache
         vector<vector<bool> > being_broken = things_being_broken(turn.entities, field);
