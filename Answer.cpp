@@ -70,24 +70,31 @@ istream & operator >> (istream & in, entity_t & a) {
     return in;
 }
 
-enum class box_t {
+enum class cell_t {
+    wall = -2,
     empty = -1,
     box = 0,
     box_extra_range = 1,
     box_extra_bomb = 2,
 };
+bool is_box(cell_t a) {
+    return a != cell_t::wall and a != cell_t::empty;
+}
 struct turn_t {
     config_t *config;
-    vector<vector<box_t> > field;
+    vector<vector<cell_t> > field;
     vector<entity_t> entities;
 };
 istream & operator >> (istream & in, turn_t & a) {
-    a.field = vectors(box_t::empty, a.config->height, a.config->width);
+    a.field = vectors(cell_t::empty, a.config->height, a.config->width);
     repeat (y, a.config->height) {
         repeat (x, a.config->width) {
             char c; in >> c;
-            assert (c == '.' or isdigit(c));
-            a.field[y][x] = c == '.' ? box_t::empty : box_t(c-'0');
+            assert (c == '.' or c == 'X' or isdigit(c));
+            a.field[y][x] =
+                c == '.' ? cell_t::empty :
+                c == 'X' ? cell_t::wall :
+                cell_t(c-'0');
         }
     }
     int n; in >> n;
@@ -108,19 +115,22 @@ ostream & operator << (ostream & out, output_t const & a) {
     return out << COMMAND_STRING[a.command] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
 }
 
-vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<box_t> > const & field) {
+vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<cell_t> > const & field) {
     int h = field.size(), w = field.front().size();
     vector<point_t> breakable;
-    if (field[y][x] != box_t::empty) {
+    if (is_box(field[y][x])) {
         breakable.push_back((point_t) { y, x });
-    } else {
+    }
+    if (field[y][x] == cell_t::empty) {
         repeat (i,4) {
             repeat_from (l,1,range) {
                 int ny = y + l*dy[i];
                 int nx = x + l*dx[i];
                 if (is_on_field(ny, nx, h, w)) {
-                    if (field[ny][nx] != box_t::empty) {
+                    if (is_box(field[ny][nx])) {
                         breakable.push_back((point_t) { ny, nx });
+                    }
+                    if (field[ny][nx] != cell_t::empty) {
                         break;
                     }
                 }
@@ -129,7 +139,7 @@ vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<box_
     }
     return breakable;
 }
-vector<vector<int> > breakable_boxes(int range, vector<vector<box_t> > const & field) {
+vector<vector<int> > breakable_boxes(int range, vector<vector<cell_t> > const & field) {
     int h = field.size(), w = field.front().size();
     vector<vector<int> > cnt = vectors(int(), h, w);
     repeat (y,h) {
@@ -139,7 +149,7 @@ vector<vector<int> > breakable_boxes(int range, vector<vector<box_t> > const & f
     }
     return cnt;
 }
-vector<vector<bool> > things_being_broken(vector<entity_t> const & entities , vector<vector<box_t> > const & field) {
+vector<vector<bool> > things_being_broken(vector<entity_t> const & entities , vector<vector<cell_t> > const & field) {
     int h = field.size(), w = field.front().size();
     vector<vector<bool> > broken = vectors(bool(), h, w);
     for (auto & ent : entities) if (ent.type == entyty_type_t::bomb) {
@@ -149,23 +159,23 @@ vector<vector<bool> > things_being_broken(vector<entity_t> const & entities , ve
     }
     return broken;
 }
-vector<vector<box_t> > remove_ineffective_things(vector<vector<box_t> > const & field, vector<vector<bool> > const & removed) {
+vector<vector<cell_t> > remove_ineffective_things(vector<vector<cell_t> > const & field, vector<vector<bool> > const & removed) {
     int h = field.size(), w = field.front().size();
-    vector<vector<box_t> > nfield = field;
+    vector<vector<cell_t> > nfield = field;
     repeat (y,h) {
         repeat (x,w) if (removed[y][x]) {
-            nfield[y][x] = box_t::empty;
+            nfield[y][x] = cell_t::empty;
         }
     }
     return nfield;
 }
-vector<vector<double> > field_potential(vector<vector<box_t> > const & field, function<double (box_t, int)> f) {
+vector<vector<double> > field_potential(vector<vector<cell_t> > const & field, function<double (cell_t, int)> f) {
     int h = field.size(), w = field.front().size();
     vector<vector<double> > pot = vectors(double(), h, w);
     repeat (y,h) {
-        repeat (x,w) if (field[y][x] == box_t::empty) {
+        repeat (x,w) if (field[y][x] == cell_t::empty) {
             repeat (ny,h) {
-                repeat (nx,w) if (field[y][x] != box_t::empty) {
+                repeat (nx,w) if (is_box(field[y][x])) {
                     pot[y][x] += f(field[y][x], abs(ny - y) + abs(nx - x));
                 }
             }
@@ -219,12 +229,12 @@ public:
         int height = config.height;
         entity_t & self = *find_entity(turn.entities, entyty_type_t::player, config.self_id);
         entity_t & opponent = *find_entity(turn.entities, entyty_type_t::player, not config.self_id);
-        vector<vector<box_t> > & field = turn.field;
+        vector<vector<cell_t> > & field = turn.field;
         // cache
         vector<vector<bool> > being_broken = things_being_broken(turn.entities, field);
-        vector<vector<box_t> > effective_field = remove_ineffective_things(field, being_broken);
+        vector<vector<cell_t> > effective_field = remove_ineffective_things(field, being_broken);
         vector<vector<int> > breakable = breakable_boxes(self.params.player.range, effective_field);
-        vector<vector<double> > potential = field_potential(effective_field, [](box_t type, int dist) { return dist == 0 ? 4 : exp(1./dist); });
+        vector<vector<double> > potential = field_potential(effective_field, [](cell_t type, int dist) { return dist == 0 ? 4 : exp(1./dist); });
 
         // construct output
         output_t output = default_output(self);
@@ -234,7 +244,7 @@ public:
             int ny = self.y + dy[i];
             int nx = self.x + dx[i];
             if (not is_on_field(ny, nx, height, width)) continue;
-            if (field[ny][nx] != box_t::empty) continue;
+            if (field[ny][nx] != cell_t::empty) continue;
             auto rank = [&](int y, int x) { return make_pair(breakable[y][x], potential[y][x]); };
             if (rank(output.y, output.x) <= rank(ny, nx)) {
                 output.y = ny;
@@ -258,9 +268,12 @@ public:
         vector<vector<char> > s = vectors<char>(' ', config.height, config.width);
         repeat (y,config.height) {
             repeat (x,config.width) {
-                box_t z = turn.field[y][x];
-                if (z != box_t::empty) {
-                    s[y][x] = z == box_t::box ? '#' : 'A'+int(z)-1;
+                cell_t z = turn.field[y][x];
+                if (z != cell_t::empty) {
+                    s[y][x] =
+                        z == cell_t::wall ? '#' :
+                        z == cell_t::box ? 'Z' :
+                        'A'+int(z)-1;
                 }
             }
         }
