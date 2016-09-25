@@ -39,38 +39,55 @@ istream & operator >> (istream & in, config_t & a) {
 }
 bool is_on_field(int y, int x, config_t const & g) { return is_on_field(y, x, g.height, g.width); }
 
-struct common_params_t { int param1, param2; };
-struct player_params_t { int count, range; };
-struct bomb_params_t { int count, range; };
+enum class item_kind_t : int {
+    extra_range = 1,
+    extra_bomb = 2,
+};
+struct common_params_t { int owner, param1, param2; };
+struct player_params_t { int id, count, range; };
+struct bomb_params_t { int owner, count, range; };
+struct item_params_t { int dummy1; item_kind_t kind; int dummy2; };
 union params_t {
     common_params_t common;
     player_params_t player;
     bomb_params_t bomb;
+    item_params_t item;
 };
-const int ENT_PLAYER = 0;
-const int ENT_BOMB = 1;
+enum class entyty_type_t {
+    player = 0,
+    bomb = 1,
+    item = 2,
+};
 struct entity_t {
-    int type;
-    int owner;
+    entyty_type_t type;
     int y, x;
     params_t params;
 };
 istream & operator >> (istream & in, entity_t & a) {
-    return in >> a.type >> a.owner >> a.x >> a.y >> a.params.common.param1 >> a.params.common.param2;
+    int type;
+    in >> type >> a.params.common.owner >> a.x >> a.y >> a.params.common.param1 >> a.params.common.param2;
+    a.type = entyty_type_t(type);
+    return in;
 }
 
+enum class box_t {
+    empty = -1,
+    box = 0,
+    box_extra_range = 1,
+    box_extra_bomb = 2,
+};
 struct turn_t {
     config_t *config;
-    vector<vector<bool> > box;
+    vector<vector<box_t> > field;
     vector<entity_t> entities;
 };
 istream & operator >> (istream & in, turn_t & a) {
-    a.box.resize(a.config->height, vector<bool>(a.config->width));
+    a.field = vectors(box_t::empty, a.config->height, a.config->width);
     repeat (y, a.config->height) {
         repeat (x, a.config->width) {
             char c; in >> c;
-            assert (c == '.' or c == '0');
-            a.box[y][x] = c == '0';
+            assert (c == '.' or isdigit(c));
+            a.field[y][x] = c == '.' ? box_t::empty : box_t(c-'0');
         }
     }
     int n; in >> n;
@@ -91,10 +108,10 @@ ostream & operator << (ostream & out, output_t const & a) {
     return out << COMMAND_STRING[a.command] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
 }
 
-vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<bool> > const & box) {
-    int h = box.size(), w = box.front().size();
+vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<box_t> > const & field) {
+    int h = field.size(), w = field.front().size();
     vector<point_t> breakable;
-    if (box[y][x]) {
+    if (field[y][x] != box_t::empty) {
         breakable.push_back((point_t) { y, x });
     } else {
         repeat (i,4) {
@@ -102,7 +119,7 @@ vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<bool
                 int ny = y + l*dy[i];
                 int nx = x + l*dx[i];
                 if (is_on_field(ny, nx, h, w)) {
-                    if (box[ny][nx]) {
+                    if (field[ny][nx] != box_t::empty) {
                         breakable.push_back((point_t) { ny, nx });
                         break;
                     }
@@ -112,45 +129,44 @@ vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<bool
     }
     return breakable;
 }
-vector<vector<int> > breakable_boxes(int range, vector<vector<bool> > const & box) {
-    int h = box.size(), w = box.front().size();
+vector<vector<int> > breakable_boxes(int range, vector<vector<box_t> > const & field) {
+    int h = field.size(), w = field.front().size();
     vector<vector<int> > cnt = vectors(int(), h, w);
     repeat (y,h) {
         repeat (x,w) {
-            cnt[y][x] = list_breakable_boxes(y, x, range, box).size();
+            cnt[y][x] = list_breakable_boxes(y, x, range, field).size();
         }
     }
     return cnt;
 }
-vector<vector<bool> > boxes_being_broken(vector<entity_t> const & entities , vector<vector<bool> > const & box) {
-    int h = box.size(), w = box.front().size();
+vector<vector<bool> > things_being_broken(vector<entity_t> const & entities , vector<vector<box_t> > const & field) {
+    int h = field.size(), w = field.front().size();
     vector<vector<bool> > broken = vectors(bool(), h, w);
-    for (auto & ent : entities) if (ent.type == ENT_BOMB) {
-        for (auto p : list_breakable_boxes(ent.y, ent.x, ent.params.bomb.range, box)) {
+    for (auto & ent : entities) if (ent.type == entyty_type_t::bomb) {
+        for (auto p : list_breakable_boxes(ent.y, ent.x, ent.params.bomb.range, field)) {
             broken[p.y][p.x] = true;
         }
     }
     return broken;
 }
-template <typename T>
-vector<vector<T> > subtract_field(vector<vector<T> > const & a, vector<vector<T> > const & b) {
-    int h = a.size(), w = a.front().size();
-    vector<vector<bool> > c = vectors(bool(), h, w);
+vector<vector<box_t> > remove_ineffective_things(vector<vector<box_t> > const & field, vector<vector<bool> > const & removed) {
+    int h = field.size(), w = field.front().size();
+    vector<vector<box_t> > nfield = field;
     repeat (y,h) {
-        repeat (x,w) {
-            c[y][x] = a[y][x] - b[y][x];
+        repeat (x,w) if (removed[y][x]) {
+            nfield[y][x] = box_t::empty;
         }
     }
-    return c;
+    return nfield;
 }
-vector<vector<double> > field_potential(vector<vector<bool> > const & a, function<double (int)> f) {
-    int h = a.size(), w = a.front().size();
+vector<vector<double> > field_potential(vector<vector<box_t> > const & field, function<double (box_t, int)> f) {
+    int h = field.size(), w = field.front().size();
     vector<vector<double> > pot = vectors(double(), h, w);
     repeat (y,h) {
-        repeat (x,w) if (not a[y][x]) {
+        repeat (x,w) if (field[y][x] == box_t::empty) {
             repeat (ny,h) {
-                repeat (nx,w) if (a[y][x]) {
-                    pot[y][x] += f(abs(ny - y) + abs(nx - x));
+                repeat (nx,w) if (field[y][x] != box_t::empty) {
+                    pot[y][x] += f(field[y][x], abs(ny - y) + abs(nx - x));
                 }
             }
         }
@@ -158,9 +174,9 @@ vector<vector<double> > field_potential(vector<vector<bool> > const & a, functio
     return pot;
 }
 
-entity_t *find_entity(vector<entity_t> & entities, int type, int owner) {
+entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, int owner) {
     for (entity_t & ent : entities) {
-        if (ent.type == type and ent.owner == owner) {
+        if (ent.type == type and ent.params.common.owner == owner) {
             return &ent;
         }
     }
@@ -201,14 +217,14 @@ public:
         // aliases
         int width = config.width;
         int height = config.height;
-        entity_t & self = *find_entity(turn.entities, ENT_PLAYER, config.self_id);
-        entity_t & opponent = *find_entity(turn.entities, ENT_PLAYER, not config.self_id);
-        vector<vector<bool> > & box = turn.box;
+        entity_t & self = *find_entity(turn.entities, entyty_type_t::player, config.self_id);
+        entity_t & opponent = *find_entity(turn.entities, entyty_type_t::player, not config.self_id);
+        vector<vector<box_t> > & field = turn.field;
         // cache
-        vector<vector<bool> > broken_boxes = boxes_being_broken(turn.entities, box);
-        vector<vector<bool> > effective_boxes = subtract_field(box, broken_boxes);
-        vector<vector<int> > breakable = breakable_boxes(self.params.player.range, effective_boxes);
-        vector<vector<double> > potential = field_potential(effective_boxes, [](int dist) { return exp(1./dist); });
+        vector<vector<bool> > being_broken = things_being_broken(turn.entities, field);
+        vector<vector<box_t> > effective_field = remove_ineffective_things(field, being_broken);
+        vector<vector<int> > breakable = breakable_boxes(self.params.player.range, effective_field);
+        vector<vector<double> > potential = field_potential(effective_field, [](box_t type, int dist) { return dist == 0 ? 4 : exp(1./dist); });
 
         // construct output
         output_t output = default_output(self);
@@ -218,7 +234,7 @@ public:
             int ny = self.y + dy[i];
             int nx = self.x + dx[i];
             if (not is_on_field(ny, nx, height, width)) continue;
-            if (box[ny][nx]) continue;
+            if (field[ny][nx] != box_t::empty) continue;
             auto rank = [&](int y, int x) { return make_pair(breakable[y][x], potential[y][x]); };
             if (rank(output.y, output.x) <= rank(ny, nx)) {
                 output.y = ny;
@@ -237,6 +253,35 @@ public:
         outputs.push_back(output);
         return output;
     }
+
+    void debug_print() {
+        vector<vector<char> > s = vectors<char>(' ', config.height, config.width);
+        repeat (y,config.height) {
+            repeat (x,config.width) {
+                box_t z = turn.field[y][x];
+                if (z != box_t::empty) {
+                    s[y][x] = z == box_t::box ? '#' : 'A'+int(z)-1;
+                }
+            }
+        }
+        for (auto & ent : turn.entities) {
+            char c = '?';
+            if (ent.type == entyty_type_t::player) {
+                c = (ent.params.player.id == config.self_id) ? '@' : '&';
+            } else if (ent.type == entyty_type_t::bomb) {
+                c = '*';
+            } else if (ent.type == entyty_type_t::item) {
+                c = 'a'+int(ent.params.item.kind)-1;
+            }
+            s[ent.y][ent.x] = c;
+        }
+        repeat (y,config.height) {
+            repeat (x,config.width) {
+                cerr << s[y][x];
+            }
+            cerr << endl;
+        }
+    }
 };
 
 int main() {
@@ -246,5 +291,6 @@ int main() {
         turn_t turn = { &config }; cin >> turn;
         output_t output = ai.think(turn);
         cout << output << endl;
+        ai.debug_print();
     }
 }
