@@ -26,6 +26,10 @@ const int dy[] = { -1, 1, 0, 0 };
 const int dx[] = { 0, 0, 1, -1 };
 bool is_on_field(int y, int x, int h, int w) { return 0 <= y and y < h and 0 <= x and x < w; }
 
+struct point_t {
+    int y, x;
+};
+
 struct config_t {
     int height, width;
     int self_id;
@@ -87,11 +91,11 @@ ostream & operator << (ostream & out, output_t const & a) {
     return out << COMMAND_STRING[a.command] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
 }
 
-int breakable_boxes(int y, int x, int range, vector<vector<bool> > const & box) {
+vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<bool> > const & box) {
     int h = box.size(), w = box.front().size();
-    int cnt = 0;
+    vector<point_t> breakable;
     if (box[y][x]) {
-        cnt += 1;
+        breakable.push_back((point_t) { y, x });
     } else {
         repeat (i,4) {
             repeat_from (l,1,range) {
@@ -99,24 +103,59 @@ int breakable_boxes(int y, int x, int range, vector<vector<bool> > const & box) 
                 int nx = x + l*dx[i];
                 if (is_on_field(ny, nx, h, w)) {
                     if (box[ny][nx]) {
-                        cnt += 1;
+                        breakable.push_back((point_t) { ny, nx });
                         break;
                     }
                 }
             }
         }
     }
-    return cnt;
+    return breakable;
 }
 vector<vector<int> > breakable_boxes(int range, vector<vector<bool> > const & box) {
     int h = box.size(), w = box.front().size();
     vector<vector<int> > cnt = vectors(int(), h, w);
     repeat (y,h) {
         repeat (x,w) {
-            cnt[y][x] = breakable_boxes(y, x, range, box);
+            cnt[y][x] = list_breakable_boxes(y, x, range, box).size();
         }
     }
     return cnt;
+}
+vector<vector<bool> > boxes_being_broken(vector<entity_t> const & entities , vector<vector<bool> > const & box) {
+    int h = box.size(), w = box.front().size();
+    vector<vector<bool> > broken = vectors(bool(), h, w);
+    for (auto & ent : entities) if (ent.type == ENT_BOMB) {
+        for (auto p : list_breakable_boxes(ent.y, ent.x, ent.params.bomb.range, box)) {
+            broken[p.y][p.x] = true;
+        }
+    }
+    return broken;
+}
+template <typename T>
+vector<vector<T> > subtract_field(vector<vector<T> > const & a, vector<vector<T> > const & b) {
+    int h = a.size(), w = a.front().size();
+    vector<vector<bool> > c = vectors(bool(), h, w);
+    repeat (y,h) {
+        repeat (x,w) {
+            c[y][x] = a[y][x] - b[y][x];
+        }
+    }
+    return c;
+}
+vector<vector<double> > field_potential(vector<vector<bool> > const & a, function<double (int)> f) {
+    int h = a.size(), w = a.front().size();
+    vector<vector<double> > pot = vectors(double(), h, w);
+    repeat (y,h) {
+        repeat (x,w) if (not a[y][x]) {
+            repeat (ny,h) {
+                repeat (nx,w) if (a[y][x]) {
+                    pot[y][x] += f(abs(ny - y) + abs(nx - x));
+                }
+            }
+        }
+    }
+    return pot;
 }
 
 entity_t *find_entity(vector<entity_t> & entities, int type, int owner) {
@@ -166,7 +205,10 @@ public:
         entity_t & opponent = *find_entity(turn.entities, ENT_PLAYER, not config.self_id);
         vector<vector<bool> > & box = turn.box;
         // cache
-        vector<vector<int> > breakable = breakable_boxes(self.params.player.range, box);
+        vector<vector<bool> > broken_boxes = boxes_being_broken(turn.entities, box);
+        vector<vector<bool> > effective_boxes = subtract_field(box, broken_boxes);
+        vector<vector<int> > breakable = breakable_boxes(self.params.player.range, effective_boxes);
+        vector<vector<double> > potential = field_potential(effective_boxes, [](int dist) { return exp(1./dist); });
 
         // construct output
         output_t output = default_output(self);
@@ -176,7 +218,9 @@ public:
             int ny = self.y + dy[i];
             int nx = self.x + dx[i];
             if (not is_on_field(ny, nx, height, width)) continue;
-            if (breakable[self.y][self.x] == 0 or breakable[self.y][self.x] <= breakable[ny][nx]) {
+            if (box[ny][nx]) continue;
+            auto rank = [&](int y, int x) { return make_pair(breakable[y][x], potential[y][x]); };
+            if (rank(output.y, output.x) <= rank(ny, nx)) {
                 output.y = ny;
                 output.x = nx;
             }
