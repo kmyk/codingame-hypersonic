@@ -26,10 +26,11 @@ template <typename T> T input(istream & in) { T a; in >> a; return a; }
 const int dy[] = { -1, 1, 0, 0 };
 const int dx[] = { 0, 0, 1, -1 };
 bool is_on_field(int y, int x, int h, int w) { return 0 <= y and y < h and 0 <= x and x < w; }
+const int inf = 1e9+7;
 
-struct point_t {
-    int y, x;
-};
+struct point_t { int y, x; };
+point_t point(int y, int x) { return (point_t) { y, x }; }
+bool operator < (point_t a, point_t b) { return make_pair(a.y, a.x) < make_pair(b.y, b.x); }
 
 enum class player_id_t : int {
     id0 = 0,
@@ -112,18 +113,20 @@ istream & operator >> (istream & in, turn_t & a) {
     return in;
 }
 
+const int bomb_time = 8;
+
 enum class command_t {
     move = 0,
     bomb = 1,
 };
-const string COMMAND_STRING[] = { "MOVE", "BOMB" };
 struct output_t {
     command_t command;
     int y, x;
     string message;
 };
 ostream & operator << (ostream & out, output_t const & a) {
-    return out << COMMAND_STRING[int(a.command)] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
+    const string table[] = { "MOVE", "BOMB" };
+    return out << table[int(a.command)] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
 }
 
 vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<cell_t> > const & field) {
@@ -212,6 +215,74 @@ int total_bomb(player_id_t id, vector<entity_t> & entities) {
     return placed + reserved;
 }
 
+map<point_t,entity_t> entity_map(vector<entity_t> const & entities) {
+    map<point_t,entity_t> ent_at;
+    for (auto & ent : entities) {
+        ent_at[point(ent.y, ent.x)] = ent;
+    }
+    return ent_at;
+}
+
+vector<vector<int> > distance_field(int sy, int sx, map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
+    int h = field.size(), w = field.front().size();
+    vector<vector<int> > dist = vectors(inf, h, w);
+    queue<point_t> que;
+    dist[sy][sx] = 0;
+    que.push(point(sy, sx));
+    while (not que.empty()) {
+        point_t p = que.front(); que.pop();
+        repeat (i,4) {
+            int ny = p.y + dy[i];
+            int nx = p.x + dx[i];
+            if (not is_on_field(ny, nx, h, w)) continue;
+            if (dist[ny][nx] != inf) continue;
+            if (field[ny][nx] != cell_t::empty) continue;
+            if (ent_at.count(point(ny, nx))) {
+                auto & ent = ent_at.at(point(ny, nx));
+                if (ent.type == entyty_type_t::bomb) continue;
+            }
+            dist[ny][nx] = dist[p.y][p.x] + 1;
+            que.push(point(ny, nx));
+        }
+    }
+    return dist;
+}
+
+vector<vector<int> > exploded_time_by(player_id_t id, map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
+    int h = field.size(), w = field.front().size();
+    vector<vector<int> > result = vectors(inf, h, w);
+    vector<vector<int> > used = vectors(inf, h, w);
+    function<void (entity_t const &, int)> explode = [&](entity_t const & ent, int time) {
+        if (used[ent.y][ent.x] <= time) return;
+        used[ent.y][ent.x] = time;
+        if (ent.params.bomb.owner == id) setmin(result[ent.y][ent.x], time);
+        repeat (i,4) {
+            repeat_from (l, 1, ent.params.bomb.range) {
+                int ny = ent.y + l*dy[i];
+                int nx = ent.x + l*dx[i];
+                if (not is_on_field(ny, nx, h, w)) continue;
+                if (field[ny][nx] == cell_t::wall) break;
+                if (ent.params.bomb.owner == id) setmin(result[ny][nx], time);
+                if (ent_at.count(point(ny, nx))) {
+                    auto & nent = ent_at.at(point(ny, nx));
+                    if (nent.type == entyty_type_t::bomb and nent.params.bomb.count > time) {
+                        explode(nent, time);
+                    }
+                    break;
+                }
+                if (field[ny][nx] != cell_t::empty) break;
+            }
+        }
+    };
+    for (auto & it : ent_at) {
+        auto & ent = it.second;
+        if (ent.type == entyty_type_t::bomb) {
+            explode(ent, ent.params.bomb.count);
+        }
+    }
+    return result;
+}
+
 entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, player_id_t owner) {
     for (entity_t & ent : entities) {
         if (ent.type == type and ent.params.common.owner == owner) {
@@ -264,7 +335,11 @@ public:
         vector<vector<bool> > being_broken = things_being_broken(turn.entities, field);
         vector<vector<cell_t> > effective_field = remove_ineffective_things(field, being_broken);
         vector<vector<int> > breakable = breakable_boxes(self.params.player.range, effective_field);
-        vector<vector<double> > potential = field_potential(effective_field, [](cell_t type, int dist) { return dist == 0 ? 4 : exp(1./dist); });
+        vector<vector<double> > box_potential = field_potential(effective_field, [](cell_t type, int dist) { return dist == 0 ? 4 : exp(1./dist); });
+        map<point_t,entity_t> ent_at = entity_map(turn.entities);
+        vector<vector<int> > exploded_time_self = exploded_time_by(self_id, ent_at, field);
+        vector<vector<int> > exploded_time_opponent = exploded_time_by(opponent_id, ent_at, field);
+        vector<vector<int> > dist_self = distance_field(self.y, self.x, ent_at, field);
 
         // construct output
         output_t output = default_output(self);
@@ -275,18 +350,23 @@ public:
             int nx = self.x + dx[i];
             if (not is_on_field(ny, nx, height, width)) continue;
             if (field[ny][nx] != cell_t::empty) continue;
-            auto rank = [&](int y, int x) { return make_pair(breakable[y][x], potential[y][x]); };
+            auto rank = [&](int y, int x) { return make_tuple(- exploded_time_opponent[y][x], breakable[y][x], box_potential[y][x]); };
             if (rank(output.y, output.x) <= rank(ny, nx)) {
                 output.y = ny;
                 output.x = nx;
             }
         }
-        if (self.params.player.count >= 1 and breakable[self.y][self.x] >= 1) {
-            if (breakable[output.y][output.x] > breakable[self.y][self.x]) {
-                // cancel
-            } else {
-                output.command = command_t::bomb;
+        int item_dist = inf;
+        for (auto & ent : turn.entities) if (ent.type == entyty_type_t::item) {
+            if (dist_self[ent.y][ent.x] < item_dist) {
+                output.y = ent.y;
+                output.x = ent.x;
             }
+        }
+        if (self.params.player.count >= 2) {
+            output.command = command_t::bomb;
+        } else if (self.params.player.count >= 1 and breakable[self.y][self.x] >= 1) {
+            output.command = command_t::bomb;
         }
 
         // hint message
