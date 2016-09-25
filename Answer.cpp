@@ -32,14 +32,14 @@ int randint(int a, int b) {
     return dist(engine);
 }
 
-struct game_t {
+struct config_t {
     int height, width;
-    int id;
+    int self_id;
 };
-istream & operator >> (istream & in, game_t & a) {
-    return in >> a.width >> a.height >> a.id;
+istream & operator >> (istream & in, config_t & a) {
+    return in >> a.width >> a.height >> a.self_id;
 }
-bool is_on_field(int y, int x, game_t const & g) { return is_on_field(y, x, g.height, g.width); }
+bool is_on_field(int y, int x, config_t const & g) { return is_on_field(y, x, g.height, g.width); }
 
 struct common_params_t { int param1, param2; };
 struct player_params_t { int count, range; };
@@ -62,14 +62,14 @@ istream & operator >> (istream & in, entity_t & a) {
 }
 
 struct turn_t {
-    game_t *game;
+    config_t *config;
     vector<vector<bool> > box;
     vector<entity_t> entities;
 };
 istream & operator >> (istream & in, turn_t & a) {
-    a.box.resize(a.game->height, vector<bool>(a.game->width));
-    repeat (y, a.game->height) {
-        repeat (x, a.game->width) {
+    a.box.resize(a.config->height, vector<bool>(a.config->width));
+    repeat (y, a.config->height) {
+        repeat (x, a.config->width) {
             char c; in >> c;
             assert (c == '.' or c == '0');
             a.box[y][x] = c == '0';
@@ -81,15 +81,48 @@ istream & operator >> (istream & in, turn_t & a) {
     return in;
 }
 
-const string CMD_MOVE = "MOVE";
-const string CMD_BOMB = "BOMB";
+const int CMD_MOVE = 0;
+const int CMD_BOMB = 1;
+const string COMMAND_STRING[] = { "MOVE", "BOMB" };
 struct output_t {
-    string command;
+    int command;
     int y, x;
     string message;
 };
 ostream & operator << (ostream & out, output_t const & a) {
-    return out << a.command << ' ' << a.x << ' ' << a.y << ' ' << a.message;
+    return out << COMMAND_STRING[a.command] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
+}
+
+int breakable_boxes(int y, int x, int range, vector<vector<bool> > const & box) {
+    int h = box.size(), w = box.front().size();
+    int cnt = 0;
+    if (box[y][x]) {
+        cnt += 1;
+    } else {
+        repeat (i,4) {
+            repeat_from (l,1,range) {
+                int ny = y + l*dy[i];
+                int nx = x + l*dx[i];
+                if (is_on_field(ny, nx, h, w)) {
+                    if (box[ny][nx]) {
+                        cnt += 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return cnt;
+}
+vector<vector<int> > breakable_boxes(int range, vector<vector<bool> > const & box) {
+    int h = box.size(), w = box.front().size();
+    vector<vector<int> > cnt = vectors(int(), h, w);
+    repeat (y,h) {
+        repeat (x,w) {
+            cnt[y][x] = breakable_boxes(y, x, range, box);
+        }
+    }
+    return cnt;
 }
 
 entity_t *find_entity(vector<entity_t> & entities, int type, int owner) {
@@ -100,47 +133,58 @@ entity_t *find_entity(vector<entity_t> & entities, int type, int owner) {
     }
     return nullptr;
 }
-int breakable_boxes(int y, int x, int range, vector<vector<bool> > const & box) {
-    int h = box.size(), w = box.front().size();
-    int cnt = 0;
-    cnt += box[y][x];
-    repeat (i,4) {
-        repeat_from (l,1,range) {
-            int ny = y + l*dy[i];
-            int nx = x + l*dx[i];
-            if (is_on_field(ny, nx, h, w)) {
-                cnt += box[ny][nx];
-            }
-        }
-    }
-    return cnt;
-}
 
-output_t think(turn_t & a) {
-    entity_t *self = find_entity(a.entities, ENT_PLAYER, a.game->id);
-    entity_t *opponent = find_entity(a.entities, ENT_PLAYER, not a.game->id);
-    output_t output = {};
-    output.command = CMD_MOVE;
-    if (self->params.player.count and breakable_boxes(self->y, self->x, self->params.player.range, a.box)) {
-        output.command = CMD_BOMB;
+class AI {
+    config_t config;
+    vector<turn_t> turns; // history
+    turn_t turn; // current
+    vector<output_t> outputs;
+
+public:
+    AI(config_t const & a_config) {
+        config = a_config;
     }
-    output.y = self->y;
-    output.x = self->x;
-    int i = randint(0, 4-1);
-    int ny = self->y + dy[i];
-    int nx = self->x + dx[i];
-    if (is_on_field(ny, nx, *a.game)) {
-        output.y = ny;
-        output.x = nx;
+    output_t think(turn_t const & a_turn) {
+        // update info
+        turns.push_back(turn);
+        turn = a_turn;
+        // aliases
+        int width = config.width;
+        int height = config.height;
+        entity_t & self = *find_entity(turn.entities, ENT_PLAYER, config.self_id);
+        entity_t & opponent = *find_entity(turn.entities, ENT_PLAYER, not config.self_id);
+        vector<vector<bool> > & box = turn.box;
+        // cache
+        vector<vector<int> > breakable = breakable_boxes(self.params.player.range, box);
+
+        // construct output
+        output_t output = {};
+        output.command = CMD_MOVE;
+        if (self.params.player.count >= 1 and breakable[self.y][self.x] >= 1) {
+            output.command = CMD_BOMB;
+        }
+        output.y = self.y;
+        output.x = self.x;
+        int i = randint(0, 4-1);
+        int ny = self.y + dy[i];
+        int nx = self.x + dx[i];
+        if (is_on_field(ny, nx, height, width)) {
+            output.y = ny;
+            output.x = nx;
+        }
+
+        // return
+        outputs.push_back(output);
+        return output;
     }
-    return output;
-}
+};
 
 int main() {
-    game_t game; cin >> game;
+    config_t config; cin >> config;
+    AI ai(config);
     while (true) {
-        turn_t turn = { &game }; cin >> turn;
-        output_t output = think(turn);
+        turn_t turn = { &config }; cin >> turn;
+        output_t output = ai.think(turn);
         cout << output << endl;
     }
 }
