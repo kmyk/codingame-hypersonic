@@ -32,94 +32,105 @@ struct point_t { int y, x; };
 point_t point(int y, int x) { return (point_t) { y, x }; }
 bool operator < (point_t a, point_t b) { return make_pair(a.y, a.x) < make_pair(b.y, b.x); }
 
-enum class player_id_t : int {
-    id0 = 0,
-    id1 = 1,
-    id2 = 2,
-    id3 = 3,
-};
-struct config_t {
-    int height, width;
-    player_id_t self_id;
-};
-istream & operator >> (istream & in, config_t & a) {
-    int self_id;
-    in >> a.width >> a.height >> self_id;
-    a.self_id = player_id_t(self_id);
-    return in;
-}
-bool is_on_field(int y, int x, config_t const & g) { return is_on_field(y, x, g.height, g.width); }
+namespace primitive {
 
-enum class item_kind_t : int {
-    extra_range = 1,
-    extra_bomb = 2,
-};
-struct player_t { int type; player_id_t id; int x, y; int bomb, range; };
-struct bomb_t { int type; player_id_t owner; int x, y; int time, range; };
-struct item_t { int type, dummy1, x, y; item_kind_t kind; int dummy2; };
-enum class entyty_type_t {
-    player = 0,
-    bomb = 1,
-    item = 2,
-};
-union entity_t {
-    struct { entyty_type_t type; player_id_t owner; int x, y, param1, param2; };
-    player_t player;
-    bomb_t bomb;
-    item_t item;
-};
-istream & operator >> (istream & in, entity_t & a) {
-    return in >> (int &)(a.type) >> (int &)(a.owner) >> a.x >> a.y >> a.param1 >> a.param2;
-}
-
-enum class cell_t {
-    wall = -2,
-    empty = -1,
-    box = 0,
-    box_extra_range = 1,
-    box_extra_bomb = 2,
-};
-bool is_box(cell_t a) {
-    return a != cell_t::wall and a != cell_t::empty;
-}
-struct turn_t {
-    config_t *config;
-    vector<vector<cell_t> > field;
-    vector<entity_t> entities;
-};
-istream & operator >> (istream & in, turn_t & a) {
-    a.field = vectors(cell_t::empty, a.config->height, a.config->width);
-    repeat (y, a.config->height) {
-        repeat (x, a.config->width) {
-            char c; in >> c;
-            assert (c == '.' or c == 'X' or isdigit(c));
-            a.field[y][x] =
-                c == '.' ? cell_t::empty :
-                c == 'X' ? cell_t::wall :
-                cell_t(c-'0');
-        }
+    enum class player_id_t : int {
+        id0 = 0,
+        id1 = 1,
+        id2 = 2,
+        id3 = 3,
+    };
+    struct config_t {
+        int height, width;
+        player_id_t self_id;
+    };
+    istream & operator >> (istream & in, config_t & a) {
+        int self_id;
+        in >> a.width >> a.height >> self_id;
+        a.self_id = player_id_t(self_id);
+        return in;
     }
-    int n; in >> n;
-    a.entities.resize(n);
-    repeat (i,n) in >> a.entities[i];
-    return in;
-}
 
-const int bomb_time = 8;
+    enum class item_kind_t : int {
+        extra_range = 1,
+        extra_bomb = 2,
+    };
+    struct player_t { int type; player_id_t id; int x, y; int bomb, range; };
+    struct bomb_t { int type; player_id_t owner; int x, y; int time, range; };
+    struct item_t { int type, dummy1, x, y; item_kind_t kind; int dummy2; };
+    enum class entyty_type_t {
+        player = 0,
+        bomb = 1,
+        item = 2,
+    };
+    union entity_t {
+        struct { entyty_type_t type; player_id_t owner; int x, y, param1, param2; };
+        player_t player;
+        bomb_t bomb;
+        item_t item;
+    };
+    istream & operator >> (istream & in, entity_t & a) {
+        return in >> (int &)(a.type) >> (int &)(a.owner) >> a.x >> a.y >> a.param1 >> a.param2;
+    }
 
-enum class command_t {
-    move = 0,
-    bomb = 1,
-};
-struct output_t {
-    command_t command;
-    int y, x;
-    string message;
-};
-ostream & operator << (ostream & out, output_t const & a) {
-    const string table[] = { "MOVE", "BOMB" };
-    return out << table[int(a.command)] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
+    enum class cell_t {
+        wall = -2,
+        empty = -1,
+        box = 0,
+        box_extra_range = 1,
+        box_extra_bomb = 2,
+    };
+    bool is_box(cell_t a) {
+        return a != cell_t::wall and a != cell_t::empty;
+    }
+    struct turn_t {
+        config_t *config;
+        vector<vector<cell_t> > field;
+        vector<entity_t> entities;
+    };
+    istream & operator >> (istream & in, turn_t & a) {
+        a.field = vectors(cell_t::empty, a.config->height, a.config->width);
+        repeat (y, a.config->height) {
+            repeat (x, a.config->width) {
+                char c; in >> c;
+                assert (c == '.' or c == 'X' or isdigit(c));
+                a.field[y][x] =
+                    c == '.' ? cell_t::empty :
+                    c == 'X' ? cell_t::wall :
+                    cell_t(c-'0');
+            }
+        }
+        int n; in >> n;
+        a.entities.resize(n);
+        repeat (i,n) in >> a.entities[i];
+        return in;
+    }
+
+    const int bomb_time = 8;
+
+    enum class command_t {
+        move = 0,
+        bomb = 1,
+    };
+    struct output_t {
+        command_t command;
+        int y, x;
+        string message;
+    };
+    ostream & operator << (ostream & out, output_t const & a) {
+        const string table[] = { "MOVE", "BOMB" };
+        return out << table[int(a.command)] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
+    }
+    output_t default_output(entity_t const & self) {
+        output_t output = {};
+        output.command = command_t::move;
+        output.y = self.y;
+        output.x = self.x;
+        return output;
+    }
+
 }
+using namespace primitive;
 
 vector<point_t> list_breakable_boxes(int y, int x, int range, vector<vector<cell_t> > const & field) {
     int h = field.size(), w = field.front().size();
@@ -296,13 +307,6 @@ entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, player_id
         }
     }
     return nullptr;
-}
-output_t default_output(entity_t const & self) {
-    output_t output = {};
-    output.command = command_t::move;
-    output.y = self.y;
-    output.x = self.x;
-    return output;
 }
 
 class AI {
