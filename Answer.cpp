@@ -30,6 +30,8 @@ const int inf = 1e9+7;
 
 struct point_t { int y, x; };
 point_t point(int y, int x) { return (point_t) { y, x }; }
+template <typename T>
+point_t point(T const & p) { return (point_t) { p.y, p.x }; }
 bool operator < (point_t a, point_t b) { return make_pair(a.y, a.x) < make_pair(b.y, b.x); }
 
 namespace primitive {
@@ -55,14 +57,14 @@ namespace primitive {
         extra_range = 1,
         extra_bomb = 2,
     };
-    struct player_t { int type; player_id_t id; int x, y; int bomb, range; };
-    struct bomb_t { int type; player_id_t owner; int x, y; int time, range; };
-    struct item_t { int type, dummy1, x, y; item_kind_t kind; int dummy2; };
     enum class entyty_type_t {
         player = 0,
         bomb = 1,
         item = 2,
     };
+    struct player_t { entyty_type_t type; player_id_t id;    int x, y; int bomb, range; };
+    struct bomb_t   { entyty_type_t type; player_id_t owner; int x, y; int time, range; };
+    struct item_t   { entyty_type_t type; int dummy1;        int x, y; item_kind_t kind; int dummy2; };
     union entity_t {
         struct { entyty_type_t type; player_id_t owner; int x, y, param1, param2; };
         player_t player;
@@ -71,6 +73,28 @@ namespace primitive {
     };
     istream & operator >> (istream & in, entity_t & a) {
         return in >> (int &)(a.type) >> (int &)(a.owner) >> a.x >> a.y >> a.param1 >> a.param2;
+    }
+    entity_t entity_cast(player_t const & a) { entity_t b; b.player = a; return b; }
+    entity_t entity_cast(bomb_t   const & a) { entity_t b; b.bomb   = a; return b; }
+    entity_t entity_cast(item_t   const & a) { entity_t b; b.item   = a; return b; }
+    const int bomb_time = 8;
+    bomb_t place_bomb(player_t const & a) {
+        bomb_t b = {};
+        b.type = entyty_type_t::bomb;
+        b.owner = a.id;
+        b.y = a.y;
+        b.x = a.x;
+        b.time = bomb_time;
+        b.range = a.range;
+        return b;
+    }
+    item_t drop_item(int y, int x, item_kind_t kind) {
+        item_t a = {};
+        a.type = entyty_type_t::item;
+        a.y = y;
+        a.x = x;
+        a.kind = kind;
+        return a;
     }
 
     enum class cell_t {
@@ -105,8 +129,13 @@ namespace primitive {
         repeat (i,n) in >> a.entities[i];
         return in;
     }
-
-    const int bomb_time = 8;
+    item_kind_t open_item_box(cell_t a) {
+        switch (a) {
+            case cell_t::box_extra_range: return item_kind_t::extra_range;
+            case cell_t::box_extra_bomb:  return item_kind_t::extra_bomb;
+            default: assert (false);
+        }
+    }
 
     enum class command_t {
         move = 0,
@@ -221,7 +250,15 @@ int total_bomb(player_id_t id, vector<entity_t> & entities) {
 map<point_t,entity_t> entity_map(vector<entity_t> const & entities) {
     map<point_t,entity_t> ent_at;
     for (auto & ent : entities) {
-        ent_at[point(ent.y, ent.x)] = ent;
+        ent_at[point(ent)] = ent;
+    }
+    return ent_at;
+}
+
+multimap<point_t,entity_t> entity_multimap(vector<entity_t> const & entities) {
+    multimap<point_t,entity_t> ent_at;
+    for (auto & ent : entities) {
+        ent_at.emplace(point(ent), ent);
     }
     return ent_at;
 }
@@ -267,7 +304,7 @@ vector<vector<double> > item_potential(map<point_t,entity_t> const & ent_at, vec
     return pot;
 }
 
-vector<vector<int> > exploded_time(map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
+vector<vector<int> > exploded_time(multimap<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
     int h = field.size(), w = field.front().size();
     vector<vector<int> > result = vectors(inf, h, w);
     function<void (entity_t const &, int)> explode = [&](entity_t const & ent, int time) {
@@ -280,12 +317,13 @@ vector<vector<int> > exploded_time(map<point_t,entity_t> const & ent_at, vector<
                 if (not is_on_field(ny, nx, h, w)) continue;
                 if (field[ny][nx] == cell_t::wall) break;
                 setmin(result[ny][nx], time);
-                if (ent_at.count(point(ny, nx))) {
-                    auto & nent = ent_at.at(point(ny, nx));
-                    if (nent.type == entyty_type_t::bomb and nent.bomb.time > time) {
-                        explode(nent, time);
-                    }
-                    break;
+                for (auto rng = ent_at.equal_range(point(ny, nx)); rng.first != rng.second; ++ rng.first) {
+                    auto & nent = rng.first->second;
+                    // > Any bomb caught in an explosion is treated as if it had exploded at the very same moment.
+                    if (nent.type == entyty_type_t::bomb and nent.bomb.time > time) explode(nent, time);
+                    // > Explosions do not go through obstructions such as boxes, items or other bombs, but are included on the cells the obstruction occupies.
+                    // > A single obstruction may block the explosions of several bombs that explode on the same turn.
+                    if (nent.type != entyty_type_t::player) break;
                 }
                 if (field[ny][nx] != cell_t::empty) break;
             }
@@ -307,6 +345,104 @@ entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, player_id
         }
     }
     return nullptr;
+}
+map<player_id_t,player_t> select_player(vector<entity_t> & entities) {
+    map<player_id_t,player_t> player;
+    for (auto & ent : entities) {
+        if (ent.type == entyty_type_t::player) {
+            player[ent.player.id] = ent.player;
+        }
+    }
+    return player;
+}
+
+turn_t next_turn(turn_t const & cur, map<player_id_t,output_t> const & command) {
+    int width  = cur.config.width;
+    int height = cur.config.height;
+    turn_t nxt = {};
+    nxt.config = cur.config;
+    nxt.field = cur.field;
+    // bomb
+    // > At the start of the round, all bombs have their countdown decreased by 1.
+    // > Any bomb countdown that reaches 0 will cause the bomb to explode immediately, before players move.
+    vector<vector<int> > exptime = exploded_time(entity_multimap(cur.entities), cur.field);
+    map<point_t,item_t> items; // after explosion
+    repeat (y,height) {
+        repeat (x,width) {
+            if (exptime[y][x]-1 == 0) {
+                // > Once the explosions have been computed, any box hit is then removed. This means that the destruction of 1 box can count for 2 different players.
+                if (is_box(cur.field[y][x])) {
+                    nxt.field[y][x] = cell_t::empty;
+                    // drop item
+                    if (cur.field[y][x] != cell_t::box) {
+                        item_kind_t kind = open_item_box(cur.field[y][x]);
+                        items[point(y, x)] = drop_item(y, x, kind);
+                    }
+                }
+            }
+        }
+    }
+    // split entities
+    map<player_id_t,player_t> players; // after explosion
+    map<point_t,bomb_t> bombs; // after explosion, before placing
+    for (entity_t ent : cur.entities) {
+        if (exptime[ent.y][ent.x]-1 == 0) continue;
+        switch (ent.type) {
+            case entyty_type_t::player:
+                players[ent.player.id] = ent.player;
+                break;
+            case entyty_type_t::bomb:
+                ent.bomb.time -= 1;
+                bombs[point(ent)] = ent.bomb;
+                nxt.entities.push_back(ent);
+                break;
+            case entyty_type_t::item:
+                items[point(ent)] = ent.item;
+                break;
+        }
+    }
+    // player
+    // > Players then perform their actions simultaneously.
+    // > Any bombs placed by a player appear at the end of the round.
+    set<point_t> player_exists; // moved
+    for (auto & it : players) {
+        player_t ent = it.second;
+        if (command.count(ent.id)) {
+            output_t output = command.at(ent.id);
+            // place bomb
+            if (output.command == command_t::bomb) {
+                assert (ent.bomb >= 1);
+                assert (not bombs.count(point(ent)));
+                ent.bomb -= 1;
+                nxt.entities.push_back(entity_cast(place_bomb(ent))); // don't add to map<point_t,player_t> bombs
+            }
+            // move
+            if (output.y != ent.y or output.x != ent.y) {
+                assert (abs(output.y - ent.y) <= 1);
+                assert (abs(output.x - ent.x) <= 1);
+                assert (not bombs.count(point(output)));
+                assert (nxt.field[output.y][output.x] == cell_t::empty);
+                ent.y = output.y;
+                ent.x = output.x;
+                // get item
+                if (items.count(point(ent))) {
+                    switch (items[point(ent)].kind) {
+                        case item_kind_t::extra_range: ent.range += 1; break;
+                        case item_kind_t::extra_bomb:  ent.bomb  += 1; break;
+                    }
+                }
+            }
+        }
+        player_exists.insert(point(ent));
+        nxt.entities.push_back(entity_cast(ent));
+    }
+    // item
+    for (auto & it : items) {
+        item_t ent = it.second;
+        if (player_exists.count(point(ent))) continue;
+        nxt.entities.push_back(entity_cast(ent));
+    }
+    return nxt;
 }
 
 class AI {
@@ -347,7 +483,7 @@ public:
         vector<vector<int> > breakable = breakable_boxes(self.player.range, effective_field);
         vector<vector<double> > box_pot = boxes_potential(effective_field, [](cell_t type, int dist) { return dist == 0 ? 3. : 1./dist; });
         map<point_t,entity_t> ent_at = entity_map(turn.entities);
-        vector<vector<int> > exptime = exploded_time(ent_at, field);
+        vector<vector<int> > exptime = exploded_time(entity_multimap(turn.entities), field);
         vector<vector<int> > dist_self = distance_field(self.y, self.x, ent_at, field);
         vector<vector<double> > item_pot = item_potential(ent_at, field, [](item_kind_t kind, int dist) { return dist == 0 ? 3. : 1./dist; });
 
