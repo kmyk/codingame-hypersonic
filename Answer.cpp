@@ -84,14 +84,14 @@ namespace primitive {
         return a != cell_t::wall and a != cell_t::empty;
     }
     struct turn_t {
-        config_t *config;
+        config_t config;
         vector<vector<cell_t> > field;
         vector<entity_t> entities;
     };
     istream & operator >> (istream & in, turn_t & a) {
-        a.field = vectors(cell_t::empty, a.config->height, a.config->width);
-        repeat (y, a.config->height) {
-            repeat (x, a.config->width) {
+        a.field = vectors(cell_t::empty, a.config.height, a.config.width);
+        repeat (y, a.config.height) {
+            repeat (x, a.config.width) {
                 char c; in >> c;
                 assert (c == '.' or c == 'X' or isdigit(c));
                 a.field[y][x] =
@@ -457,7 +457,7 @@ int main() {
     config_t config; cin >> config;
     AI ai(config);
     while (true) {
-        turn_t turn = { &config }; cin >> turn;
+        turn_t turn = { config }; cin >> turn;
         output_t output = ai.think(turn);
         cout << output << endl;
         ai.debug_print();
