@@ -35,6 +35,8 @@ bool operator < (point_t a, point_t b) { return make_pair(a.y, a.x) < make_pair(
 enum class player_id_t : int {
     id0 = 0,
     id1 = 1,
+    id2 = 2,
+    id3 = 3,
 };
 struct config_t {
     int height, width;
@@ -52,32 +54,22 @@ enum class item_kind_t : int {
     extra_range = 1,
     extra_bomb = 2,
 };
-struct common_params_t { player_id_t owner; int param1, param2; };
-struct player_params_t { player_id_t id; int count, range; };
-struct bomb_params_t { player_id_t owner; int count, range; };
-struct item_params_t { int dummy1; item_kind_t kind; int dummy2; };
-union params_t {
-    common_params_t common;
-    player_params_t player;
-    bomb_params_t bomb;
-    item_params_t item;
-};
+struct player_t { int type; player_id_t id; int x, y; int bomb, range; };
+struct bomb_t { int type; player_id_t owner; int x, y; int time, range; };
+struct item_t { int type, dummy1, x, y; item_kind_t kind; int dummy2; };
 enum class entyty_type_t {
     player = 0,
     bomb = 1,
     item = 2,
 };
-struct entity_t {
-    entyty_type_t type;
-    int y, x;
-    params_t params;
+union entity_t {
+    struct { entyty_type_t type; player_id_t owner; int x, y, param1, param2; };
+    player_t player;
+    bomb_t bomb;
+    item_t item;
 };
 istream & operator >> (istream & in, entity_t & a) {
-    int type, owner;
-    in >> type >> owner >> a.x >> a.y >> a.params.common.param1 >> a.params.common.param2;
-    a.type = entyty_type_t(type);
-    a.params.common.owner  = player_id_t(owner);
-    return in;
+    return in >> (int &)(a.type) >> (int &)(a.owner) >> a.x >> a.y >> a.param1 >> a.param2;
 }
 
 enum class cell_t {
@@ -167,7 +159,7 @@ vector<vector<bool> > things_being_broken(vector<entity_t> const & entities , ve
     int h = field.size(), w = field.front().size();
     vector<vector<bool> > broken = vectors(bool(), h, w);
     for (auto & ent : entities) if (ent.type == entyty_type_t::bomb) {
-        for (auto p : list_breakable_boxes(ent.y, ent.x, ent.params.bomb.range, field)) {
+        for (auto p : list_breakable_boxes(ent.y, ent.x, ent.bomb.range, field)) {
             broken[p.y][p.x] = true;
         }
     }
@@ -203,11 +195,11 @@ int total_bomb(player_id_t id, vector<entity_t> & entities) {
     int reserved = 0;
     for (auto & ent : entities) {
         if (ent.type == entyty_type_t::player) {
-            if (ent.params.player.id == id) {
-                reserved += ent.params.player.count;
+            if (ent.player.id == id) {
+                reserved += ent.player.bomb;
             }
         } else if (ent.type == entyty_type_t::bomb) {
-            if (ent.params.bomb.owner == id) {
+            if (ent.bomb.owner == id) {
                 placed += 1;
             }
         }
@@ -256,7 +248,7 @@ vector<vector<double> > item_potential(map<point_t,entity_t> const & ent_at, vec
             vector<vector<int> > dist = distance_field(ent.y, ent.x, ent_at, field);
             repeat (y,h) {
                 repeat (x,w) if (dist[y][x] != inf) {
-                    pot[y][x] += f(ent.params.item.kind, dist[y][x]);
+                    pot[y][x] += f(ent.item.kind, dist[y][x]);
                 }
             }
         }
@@ -271,7 +263,7 @@ vector<vector<int> > exploded_time(map<point_t,entity_t> const & ent_at, vector<
         if (result[ent.y][ent.x] <= time) return;
         result[ent.y][ent.x] = time;
         repeat (i,4) {
-            repeat_from (l, 1, ent.params.bomb.range) {
+            repeat_from (l, 1, ent.bomb.range) {
                 int ny = ent.y + l*dy[i];
                 int nx = ent.x + l*dx[i];
                 if (not is_on_field(ny, nx, h, w)) continue;
@@ -279,7 +271,7 @@ vector<vector<int> > exploded_time(map<point_t,entity_t> const & ent_at, vector<
                 setmin(result[ny][nx], time);
                 if (ent_at.count(point(ny, nx))) {
                     auto & nent = ent_at.at(point(ny, nx));
-                    if (nent.type == entyty_type_t::bomb and nent.params.bomb.count > time) {
+                    if (nent.type == entyty_type_t::bomb and nent.bomb.time > time) {
                         explode(nent, time);
                     }
                     break;
@@ -291,7 +283,7 @@ vector<vector<int> > exploded_time(map<point_t,entity_t> const & ent_at, vector<
     for (auto & it : ent_at) {
         auto & ent = it.second;
         if (ent.type == entyty_type_t::bomb) {
-            explode(ent, ent.params.bomb.count);
+            explode(ent, ent.bomb.time);
         }
     }
     return result;
@@ -299,7 +291,7 @@ vector<vector<int> > exploded_time(map<point_t,entity_t> const & ent_at, vector<
 
 entity_t *find_entity(vector<entity_t> & entities, entyty_type_t type, player_id_t owner) {
     for (entity_t & ent : entities) {
-        if (ent.type == type and ent.params.common.owner == owner) {
+        if (ent.type == type and ent.owner == owner) {
             return &ent;
         }
     }
@@ -348,7 +340,7 @@ public:
         // cache
         vector<vector<bool> > being_broken = things_being_broken(turn.entities, field);
         vector<vector<cell_t> > effective_field = remove_ineffective_things(field, being_broken);
-        vector<vector<int> > breakable = breakable_boxes(self.params.player.range, effective_field);
+        vector<vector<int> > breakable = breakable_boxes(self.player.range, effective_field);
         vector<vector<double> > box_pot = boxes_potential(effective_field, [](cell_t type, int dist) { return dist == 0 ? 3. : 1./dist; });
         map<point_t,entity_t> ent_at = entity_map(turn.entities);
         vector<vector<int> > exptime = exploded_time(ent_at, field);
@@ -374,15 +366,15 @@ public:
                 output.x = nx;
             }
         }
-        if (self.params.player.count >= 3 * box_pot[self.y][self.x] ) {
+        if (self.player.bomb >= 3 * box_pot[self.y][self.x] ) {
             output.command = command_t::bomb;
-        } else if (self.params.player.count >= 1 and breakable[self.y][self.x] >= 1) {
-            if (self.params.player.count == 1 and breakable[output.y][output.x] > breakable[self.y][self.x]) {
+        } else if (self.player.bomb >= 1 and breakable[self.y][self.x] >= 1) {
+            if (self.player.bomb == 1 and breakable[output.y][output.x] > breakable[self.y][self.x]) {
                 // cancel
             } else {
                 output.command = command_t::bomb;
             }
-        } else if (self.params.player.count >= 1 and box_pot[self.y][self.x] < 0.001) {
+        } else if (self.player.bomb >= 1 and box_pot[self.y][self.x] < 0.001) {
             output.command = command_t::bomb;
         }
         if (output.command == command_t::bomb) {
@@ -416,7 +408,7 @@ public:
         // hint message
         {
             ostringstream oss;
-            oss << "R" << self.params.player.range << "/B" << total_bomb(config.self_id, turn.entities);;
+            oss << "R" << self.player.range << "/B" << total_bomb(config.self_id, turn.entities);;
             output.message = oss.str();
         }
         // return
@@ -440,11 +432,11 @@ public:
         for (auto & ent : turn.entities) {
             char c = '?';
             if (ent.type == entyty_type_t::player) {
-                c = (ent.params.player.id == config.self_id) ? '@' : '&';
+                c = (ent.player.id == config.self_id) ? '@' : '&';
             } else if (ent.type == entyty_type_t::bomb) {
                 c = '*';
             } else if (ent.type == entyty_type_t::item) {
-                c = 'a'+int(ent.params.item.kind)-1;
+                c = 'a'+int(ent.item.kind)-1;
             }
             s[ent.y][ent.x] = c;
         }
