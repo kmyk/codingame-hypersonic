@@ -1,9 +1,10 @@
 .PHONY: default build copy
 default: build copy
 
-CXX ?= g++
 build:
-	${CXX} -std=c++11 -Wall Answer.cpp
+	# https://www.codingame.com/faq
+	# C++: g++ 4.9.2 mode C++11 With the following libraries ‑lm, ‑lpthread, ‑ldl, ‑lcrypt; Memory limit 768MB
+	g++ -std=c++11 -lm -lpthread -ldl -lcrypt -Wall -pedantic Answer.cpp
 
 copy:
 	cat Answer.cpp | xclip -sel clip
