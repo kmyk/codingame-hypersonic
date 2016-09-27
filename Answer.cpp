@@ -203,7 +203,7 @@ multimap<point_t,entity_t> entity_multimap(vector<entity_t> const & entities) {
     return ent_at;
 }
 
-vector<vector<int> > distance_field(int sy, int sx, map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
+vector<vector<int> > distance_field(int sy, int sx, multimap<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
     int h = field.size(), w = field.front().size();
     vector<vector<int> > dist = vectors(inf, h, w);
     queue<point_t> que;
@@ -211,37 +211,37 @@ vector<vector<int> > distance_field(int sy, int sx, map<point_t,entity_t> const 
     que.push(point(sy, sx));
     while (not que.empty()) {
         point_t p = que.front(); que.pop();
+        bool obstruction = false;
+        if (field[p.y][p.x] != cell_t::empty) obstruction = true;
+        for (auto rng = ent_at.equal_range(p); rng.first != rng.second; ++ rng.first) {
+            auto & ent = rng.first->second;
+            if (ent.type == entyty_type_t::bomb) obstruction = true;
+        }
+        if (obstruction) continue;
         repeat (i,4) {
             int ny = p.y + dy[i];
             int nx = p.x + dx[i];
             if (not is_on_field(ny, nx, h, w)) continue;
             if (dist[ny][nx] != inf) continue;
-            if (field[ny][nx] != cell_t::empty) continue;
-            if (ent_at.count(point(ny, nx))) {
-                auto & ent = ent_at.at(point(ny, nx));
-                if (ent.type == entyty_type_t::bomb) continue;
-            }
+            if (field[ny][nx] == cell_t::wall) continue;
             dist[ny][nx] = dist[p.y][p.x] + 1;
             que.push(point(ny, nx));
         }
     }
     return dist;
 }
-vector<vector<double> > item_potential(map<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field, function<double (item_kind_t, int)> f) {
+double box_potential_at(int sy, int sx, multimap<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field, function<double (cell_t, int)> func) {
     int h = field.size(), w = field.front().size();
-    vector<vector<double> > pot = vectors(0.0, h, w);
-    for (auto & it : ent_at) {
-        auto & ent = it.second;
-        if (ent.type == entyty_type_t::item) {
-            vector<vector<int> > dist = distance_field(ent.y, ent.x, ent_at, field);
-            repeat (y,h) {
-                repeat (x,w) if (dist[y][x] != inf) {
-                    pot[y][x] += f(ent.item.kind, dist[y][x]);
-                }
+    vector<vector<int> > dist = distance_field(sy, sx, ent_at, field);
+    double acc;
+    repeat (y,h) {
+        repeat (x,w) {
+            if (dist[y][x] != inf and is_box(field[y][x])) {
+                acc += func(field[y][x], dist[y][x]);
             }
         }
     }
-    return pot;
+    return acc;
 }
 
 struct exploded_time_info_t { int time; bool owner[player_number]; };
@@ -421,10 +421,11 @@ struct photon_t {
     command_t initial_command;
     int age;
     int box, range, bomb; // difference
-    double score;
+    double bonus;
+    double score; // cached
 };
 double evaluate_photon(photon_t const & pho) {
-    return 4*pho.box + pho.range + pho.bomb; // very magic
+    return 5*pho.box + 1.2*pho.range + pho.bomb + pho.bonus; // very magic
 }
 photon_t default_photon(turn_t const & turn) {
     photon_t pho = {};
@@ -472,15 +473,29 @@ public:
         // update info
         turns.push_back(turn);
         turn = a_turn;
+        int height = config.height;
+        int width  = config.width;
         map<player_id_t,player_t> players = select_player(turn.entities);
         player_t self = players[turn.config.self_id];
+        multimap<point_t,entity_t> ent_at = entity_multimap(turn.entities);
 
         // beam search
         command_t command = default_command(self); {
+            map<point_t,double> boxpot;
+            repeat (i,5) {
+                int y = self.y + dy[i];
+                int x = self.x + dx[i];
+                if (not is_on_field(y, x, height, width)) continue;
+                double it = box_potential_at(y, x, ent_at, turn.field, [](cell_t box, int dist) {
+                    return dist == 0 ? 2. : 1./dist;
+                });
+                boxpot[point(y, x)] = it;
+            }
             vector<shared_ptr<photon_t> > beam;
             beam.emplace_back(make_shared<photon_t>(default_photon(turn)));
             const int beam_width = 32;
-            repeat (age,14) {
+            const int place_bomb_time = 3;
+            repeat (age, place_bomb_time + bomb_time) {
                 map<tuple<action_t,int,int>, shared_ptr<photon_t> > used;
                 for (auto const & pho : beam) {
                     repeat (i,5) repeat (j,2) {
@@ -488,7 +503,8 @@ public:
                             player_t curself = *find_player(pho->turn.entities, pho->turn.config.self_id);
                             action_t action = j == 0 ? action_t::move : action_t::bomb;
                             command_t command = create_command(curself, dy[i], dx[i], action);
-                            if (pho->age >= 3 and action == action_t::bomb) continue;
+                            if (pho->age >= place_bomb_time and action == action_t::bomb) continue;
+                            if (not is_on_field(command.y, command.x, height, width)) continue;
                             commands[curself.id] = command;
                         }
                         shared_ptr<photon_t> npho = update_photon(*pho, commands);
@@ -504,6 +520,7 @@ public:
                             }
                         }
                         if (not npho) continue;
+                        if (age == 0) npho->bonus += boxpot[point(command)];
                         auto key = make_tuple(npho->initial_command.action, nxtself.y, nxtself.x);
                         if (used.count(key) and used[key]->score >= npho->score) continue;
                         used[key] = npho;
