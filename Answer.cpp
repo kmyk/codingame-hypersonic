@@ -436,6 +436,7 @@ struct photon_t {
     int age;
     int box, range, bomb; // difference
     vector<vector<exploded_time_info_t> > exptime;
+    int box_acc;
     double bonus;
     double score; // cached
 };
@@ -445,11 +446,14 @@ double evaluate_photon(photon_t const & pho) { // very magic
     map<player_id_t,player_t> players = select_player(pho.turn.entities);
     player_t self = players[pho.turn.config.self_id];
     double score = 0;
-    score += 9*pho.box;
+    const double box_base = 9;
+    const double box_delta = 0.8;
+    score += box_base  * pho.box;
+    score += box_delta * pho.box_acc;
     repeat (y,h) {
         repeat (x,w) {
             if (is_box(pho.turn.field[y][x]) and pho.exptime[y][x].time != inf and pho.exptime[y][x].owner[int(self.id)]) {
-                score += 9 - 6 * pho.exptime[y][x].time /(double) bomb_time;
+                score += box_base - box_delta * pho.exptime[y][x].time;
             }
         }
     }
@@ -486,6 +490,7 @@ shared_ptr<photon_t> update_photon(photon_t const & pho, map<player_id_t,command
     npho->range += info.range[int(self_id)];
     npho->bomb  += info.bomb[ int(self_id)];
     npho->exptime = exploded_time(npho->turn);
+    npho->box_acc += pho.box;
     npho->score = evaluate_photon(*npho);
     return npho;
 }
