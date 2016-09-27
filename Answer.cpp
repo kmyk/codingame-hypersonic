@@ -178,7 +178,7 @@ namespace primitive {
 }
 using namespace primitive;
 
-int total_bomb(player_id_t id, vector<entity_t> & entities) {
+int total_bomb(player_id_t id, vector<entity_t> const & entities) {
     int placed = 0;
     int reserved = 0;
     for (auto & ent : entities) {
@@ -229,19 +229,6 @@ vector<vector<int> > distance_field(int sy, int sx, multimap<point_t,entity_t> c
         }
     }
     return dist;
-}
-double box_potential_at(int sy, int sx, multimap<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field, function<double (cell_t, int)> func) {
-    int h = field.size(), w = field.front().size();
-    vector<vector<int> > dist = distance_field(sy, sx, ent_at, field);
-    double acc;
-    repeat (y,h) {
-        repeat (x,w) {
-            if (dist[y][x] != inf and is_box(field[y][x])) {
-                acc += func(field[y][x], dist[y][x]);
-            }
-        }
-    }
-    return acc;
 }
 
 struct exploded_time_info_t { int time; bool owner[player_number]; };
@@ -447,27 +434,37 @@ struct photon_t {
     command_t initial_command;
     int age;
     int box, range, bomb; // difference
-    double bonus;
     vector<vector<exploded_time_info_t> > exptime;
     double score; // cached
 };
 double evaluate_photon(photon_t const & pho) { // very magic
     int h = pho.turn.config.height;
     int w = pho.turn.config.width;
-    player_id_t self_id = pho.turn.config.self_id;
-    double score = 5*pho.box + 1.2*pho.range + pho.bomb + pho.bonus;
+    map<player_id_t,player_t> players = select_player(pho.turn.entities);
+    player_t self = players[pho.turn.config.self_id];
+    double score = 0;
+    score += 7*pho.box;
     repeat (y,h) {
         repeat (x,w) {
-            if (is_box(pho.turn.field[y][x]) and pho.exptime[y][x].time != inf and pho.exptime[y][x].owner[int(self_id)]) {
-                score += 5 - 2 * pho.exptime[y][x].time /(double) bomb_time;
+            if (is_box(pho.turn.field[y][x]) and pho.exptime[y][x].time != inf and pho.exptime[y][x].owner[int(self.id)]) {
+                score += 7 - 3 * pho.exptime[y][x].time /(double) bomb_time;
             }
         }
     }
+    score += 0.7 * min(5, pho.range) + 0.2 * pho.range;
+    score += 0.9 * min(4, pho.bomb)  + 0.5 * pho.bomb;
+    score += 0.1 * min(bomb_time+1, pho.exptime[self.y][self.x].time);
+    if (self.bomb == 0) score -= 0.2;
+    score -= 0.1 * abs(self.y - h/2.);
+    score -= 0.1 * abs(self.x - w/2.);
+    score -= 2 * players.size();
     return score;
 }
-photon_t default_photon(turn_t const & turn) {
+photon_t initial_photon(turn_t const & turn) {
     photon_t pho = {};
     pho.turn = turn;
+    pho.range = find_player(turn.entities, turn.config.self_id)->range;
+    pho.bomb = total_bomb(turn.config.self_id, turn.entities);
     pho.exptime = exploded_time(turn);
     pho.score = evaluate_photon(pho);
     return pho;
@@ -510,6 +507,7 @@ public:
         config = a_config;
     }
     output_t think(turn_t const & a_turn) {
+        high_resolution_clock::time_point clock_begin = high_resolution_clock::now();
         // update info
         turns.push_back(turn);
         turn = a_turn;
@@ -522,22 +520,12 @@ public:
         // beam search
         string message = "";
         command_t command = default_command(self); {
-            map<point_t,double> boxpot;
-            repeat (i,5) {
-                int y = self.y + dy[i];
-                int x = self.x + dx[i];
-                if (not is_on_field(y, x, height, width)) continue;
-                double it = box_potential_at(y, x, ent_at, turn.field, [](cell_t box, int dist) {
-                    return dist == 0 ? 2. : 1./dist;
-                });
-                boxpot[point(y, x)] = it;
-            }
             vector<shared_ptr<photon_t> > beam;
-            beam.emplace_back(make_shared<photon_t>(default_photon(turn)));
+            beam.emplace_back(make_shared<photon_t>(initial_photon(turn)));
             const int beam_width = 32;
             const int place_bomb_time = 3;
             repeat (age, place_bomb_time + bomb_time) {
-                map<tuple<action_t,int,int>, shared_ptr<photon_t> > used;
+                map<tuple<command_t,point_t>, shared_ptr<photon_t> > used;
                 for (auto const & pho : beam) {
                     repeat (i,5) repeat (j,2) {
                         map<player_id_t,command_t> commands; {
@@ -561,10 +549,9 @@ public:
                             }
                         }
                         if (not npho) continue;
-                        if (age == 0) npho->bonus += boxpot[point(command)];
-                        auto key = make_tuple(npho->initial_command.action, nxtself.y, nxtself.x);
-                        if (used.count(key) and used[key]->score >= npho->score) continue;
-                        used[key] = npho;
+                        auto signature = make_tuple(npho->initial_command, point(nxtself));
+                        if (used.count(signature) and used[signature]->score >= npho->score) continue;
+                        used[signature] = npho;
                     }
                 }
                 beam.clear();
@@ -589,11 +576,20 @@ public:
             }
         }
 
-        // message
+        // return
+        high_resolution_clock::time_point clock_end = high_resolution_clock::now(); {
+            ll clock_count = duration_cast<milliseconds>(clock_end - clock_begin).count();
+            ostringstream oss;
+            if (message.empty()) {
+                oss << clock_count << "ms";
+            } else {
+                oss << message << " (" << clock_count << "ms)";
+            }
+            message = oss.str();
+        }
         output_t output;
         output.command = command;
         output.message = message;
-        // return
         outputs.push_back(output);
         return output;
     }
