@@ -175,6 +175,7 @@ namespace primitive {
         return command;
     }
 
+    const int time_limit = 100;
 }
 using namespace primitive;
 
@@ -435,6 +436,7 @@ struct photon_t {
     int age;
     int box, range, bomb; // difference
     vector<vector<exploded_time_info_t> > exptime;
+    double bonus;
     double score; // cached
 };
 double evaluate_photon(photon_t const & pho) { // very magic
@@ -443,21 +445,22 @@ double evaluate_photon(photon_t const & pho) { // very magic
     map<player_id_t,player_t> players = select_player(pho.turn.entities);
     player_t self = players[pho.turn.config.self_id];
     double score = 0;
-    score += 7*pho.box;
+    score += 9*pho.box;
     repeat (y,h) {
         repeat (x,w) {
             if (is_box(pho.turn.field[y][x]) and pho.exptime[y][x].time != inf and pho.exptime[y][x].owner[int(self.id)]) {
-                score += 7 - 3 * pho.exptime[y][x].time /(double) bomb_time;
+                score += 9 - 6 * pho.exptime[y][x].time /(double) bomb_time;
             }
         }
     }
-    score += 0.7 * min(5, pho.range) + 0.2 * pho.range;
-    score += 0.9 * min(4, pho.bomb)  + 0.5 * pho.bomb;
+    score += 0.9 * min(5, pho.range) + 0.3 * pho.range;
+    score += 1.1 * min(4, pho.bomb)  + 0.5 * pho.bomb;
     score += 0.1 * min(bomb_time+1, pho.exptime[self.y][self.x].time);
     if (self.bomb == 0) score -= 0.2;
     score -= 0.1 * abs(self.y - h/2.);
     score -= 0.1 * abs(self.x - w/2.);
     // score -= 2 * players.size(); // TODO: 実際には相手は回避するので、回避不能性を見なければ
+    score += pho.bonus;
     return score;
 }
 photon_t initial_photon(turn_t const & turn) {
@@ -523,8 +526,9 @@ public:
             vector<shared_ptr<photon_t> > beam;
             beam.emplace_back(make_shared<photon_t>(initial_photon(turn)));
             const int beam_width = 32;
-            const int place_bomb_time = 3;
-            repeat (age, place_bomb_time + bomb_time) {
+            const int place_bomb_time = 4;
+            const int simulation_time = 10;
+            repeat (age, simulation_time) {
                 map<tuple<command_t,point_t>, shared_ptr<photon_t> > used;
                 for (auto const & pho : beam) {
                     repeat (i,5) repeat (j,2) {
@@ -549,6 +553,7 @@ public:
                             }
                         }
                         if (not npho) continue;
+                        npho->bonus = uniform_real_distribution<double>(- 0.2, 0.2)(engine);
                         auto signature = make_tuple(npho->initial_command, point(nxtself));
                         if (used.count(signature) and used[signature]->score >= npho->score) continue;
                         used[signature] = npho;
@@ -568,10 +573,17 @@ public:
                     if (age == 0) {
                         message = "Sayonara!";
                     } else if (age <= 9) {
-                        message = "Aieee";
+                        message = "Aieee"; // TODO: 予測がまだやっぱりバグ残ってる
                     } else {
                         message = "Kowai";
                     }
+                }
+                // time limit
+                const int time_limit_margin = 20;
+                high_resolution_clock::time_point clock_end = high_resolution_clock::now();
+                ll clock_count = duration_cast<milliseconds>(clock_end - clock_begin).count();
+                if (clock_count > time_limit - time_limit_margin) { // magic, randomness
+                    break;
                 }
             }
         }
