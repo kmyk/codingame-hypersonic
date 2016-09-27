@@ -472,53 +472,6 @@ public:
         turn = a_turn;
         player_t self = *find_player(turn.entities, config.self_id);
 
-        // beam search for forbidden moves
-        set<command_t> forbidden;
-        repeat (initial_i,5) repeat (initial_j,2) {
-            command_t initial_command; {
-                action_t action = initial_j == 0 ? action_t::move : action_t::bomb;
-                initial_command = create_command(self, dy[initial_i], dx[initial_i], action);
-            }
-            vector<shared_ptr<photon_t> > beam; {
-                map<player_id_t,command_t> commands; {
-                    map<player_id_t,player_t> players = select_player(turn.entities);
-                    for (auto & it : players) {
-                        player_t & ent = it.second;
-                        commands[ent.id] = ent.id == self.id ?  initial_command : create_command(ent, 0, 0, action_t::bomb);
-                    }
-                }
-                photon_t pho = default_photon(turn);
-                shared_ptr<photon_t> npho = update_photon(pho, commands);
-                if (not npho) continue;
-                beam.emplace_back(npho);
-            }
-            const int beam_width = 8;
-            repeat (age,8) {
-                map<point_t,shared_ptr<photon_t> > used;
-                for (auto const & pho : beam) {
-                    repeat (i,5) {
-                        map<player_id_t,command_t> commands; {
-                            player_t self = *find_player(pho->turn.entities, pho->turn.config.self_id);
-                            commands[self.id] = create_command(self, dy[i], dx[i], action_t::move);
-                        }
-                        shared_ptr<photon_t> npho = update_photon(*pho, commands);
-                        if (not npho) continue;
-                        player_t self = *find_player(npho->turn.entities, npho->turn.config.self_id);
-                        if (used.count(point(self)) and used[point(self)]->score >= npho->score) continue;
-                        used[point(self)] = npho;
-                    }
-                }
-                beam.clear();
-                for (auto & it : used) beam.emplace_back(it.second);
-                whole(shuffle, beam, engine);
-                whole(sort, beam, [&](shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->score > b->score; }); // reversed
-                if (beam.size() > beam_width) beam.resize(beam_width);
-            }
-            if (beam.empty()) {
-                forbidden.insert(initial_command);
-            }
-        }
-
         // beam search
         command_t command = default_command(self); {
             vector<shared_ptr<photon_t> > beam;
@@ -533,7 +486,6 @@ public:
                             action_t action = j == 0 ? action_t::move : action_t::bomb;
                             command_t command = create_command(self, dy[i], dx[i], action);
                             if (pho->age >= 3 and action == action_t::bomb) continue;
-                            if (pho->age == 0 and forbidden.count(command)) continue;
                             commands[self.id] = command;
                         }
                         shared_ptr<photon_t> npho = update_photon(*pho, commands);
