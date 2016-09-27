@@ -457,7 +457,7 @@ double evaluate_photon(photon_t const & pho) { // very magic
     if (self.bomb == 0) score -= 0.2;
     score -= 0.1 * abs(self.y - h/2.);
     score -= 0.1 * abs(self.x - w/2.);
-    score -= 2 * players.size();
+    // score -= 2 * players.size(); // TODO: 実際には相手は回避するので、回避不能性を見なければ
     return score;
 }
 photon_t initial_photon(turn_t const & turn) {
