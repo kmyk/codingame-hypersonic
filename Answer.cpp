@@ -141,25 +141,36 @@ namespace primitive {
         }
     }
 
-    enum class command_t {
+    enum class action_t {
         move = 0,
         bomb = 1,
     };
+    struct command_t {
+        action_t action;
+        int y, x;
+    };
     struct output_t {
         command_t command;
-        int y, x;
         string message;
     };
     ostream & operator << (ostream & out, output_t const & a) {
         const string table[] = { "MOVE", "BOMB" };
-        return out << table[int(a.command)] << ' ' << a.x << ' ' << a.y << ' ' << a.message;
+        return out << table[int(a.command.action)] << ' ' << a.command.x << ' ' << a.command.y << ' ' << a.message;
     }
-    output_t default_output(player_t const & self) {
-        output_t output = {};
-        output.command = command_t::move;
-        output.y = self.y;
-        output.x = self.x;
-        return output;
+    bool operator < (command_t const & a, command_t const & b) { return make_tuple(a.action, a.y, a.x) < make_tuple(b.action, b.y, b.x); }
+    command_t default_command(player_t const & self) {
+        command_t command = {};
+        command.action = action_t::move;
+        command.y = self.y;
+        command.x = self.x;
+        return command;
+    }
+    command_t create_command(player_t const & self, int dy, int dx, action_t action) {
+        command_t command = {};
+        command.action = action;
+        command.y = self.y + dy;
+        command.x = self.x + dx;
+        return command;
     }
 
 }
@@ -276,13 +287,18 @@ vector<vector<exploded_time_info_t> > exploded_time(multimap<point_t,entity_t> c
     return result;
 }
 
-player_t const *find_player(vector<entity_t> const & entities, player_id_t id) {
+map<player_id_t,player_t> select_player(vector<entity_t> const & entities) {
+    map<player_id_t,player_t> player;
     for (auto & ent : entities) {
-        if (ent.type == entyty_type_t::player and ent.player.id == id) {
-            return &ent.player;
+        if (ent.type == entyty_type_t::player) {
+            player[ent.player.id] = ent.player;
         }
     }
-    return nullptr;
+    return player;
+}
+shared_ptr<player_t> find_player(vector<entity_t> const & entities, player_id_t id) {
+    auto players = select_player(entities);
+    return players.count(id) ? make_shared<player_t>(players[id]) : nullptr;
 }
 
 struct next_turn_info_t {
@@ -291,7 +307,7 @@ struct next_turn_info_t {
     int range[player_number];
     int bomb[player_number];
 };
-shared_ptr<turn_t> next_turn(turn_t const & cur, map<player_id_t,output_t> const & command, next_turn_info_t & info) {
+shared_ptr<turn_t> next_turn(turn_t const & cur, map<player_id_t,command_t> const & commands, next_turn_info_t & info) {
     info = {};
     shared_ptr<turn_t> nxt = make_shared<turn_t>();
     nxt->config = cur.config;
@@ -352,25 +368,25 @@ shared_ptr<turn_t> next_turn(turn_t const & cur, map<player_id_t,output_t> const
     set<point_t> player_exists; // moved
     for (auto & it : players) {
         player_t ent = it.second;
-        if (command.count(ent.id)) {
-            output_t output = command.at(ent.id);
+        if (commands.count(ent.id)) {
+            command_t command = commands.at(ent.id);
             // place bomb
-            if (output.command == command_t::bomb) {
+            if (command.action == action_t::bomb) {
                 if (ent.bomb == 0) return nullptr;
                 if (bombs.count(point(ent))) return nullptr;
                 ent.bomb -= 1;
                 nxt->entities.push_back(entity_cast(place_bomb(ent))); // don't add to map<point_t,player_t> bombs
             }
             // move
-            if (output.y != ent.y or output.x != ent.y) {
-                if (not is_on_field(output.y, output.x, cur.config.height, cur.config.width)) return nullptr;
-                if (abs(output.y - ent.y) >= 2) return nullptr;
-                if (abs(output.x - ent.x) >= 2) return nullptr;
-                if (bombs.count(point(output))) return nullptr;
-                if (nxt->field[output.y][output.x] != cell_t::empty) return nullptr;
-                if ( cur.field[output.y][output.x] != cell_t::empty) return nullptr; // It seems that they cannot move onto a box, even if the box is broken in the turn.
-                ent.y = output.y;
-                ent.x = output.x;
+            if (command.y != ent.y or command.x != ent.y) {
+                if (not is_on_field(command.y, command.x, cur.config.height, cur.config.width)) return nullptr;
+                if (abs(command.y - ent.y) >= 2) return nullptr;
+                if (abs(command.x - ent.x) >= 2) return nullptr;
+                if (bombs.count(point(command))) return nullptr;
+                if (nxt->field[command.y][command.x] != cell_t::empty) return nullptr;
+                if ( cur.field[command.y][command.x] != cell_t::empty) return nullptr; // It seems that they cannot move onto a box, even if the box is broken in the turn.
+                ent.y = command.y;
+                ent.x = command.x;
                 // get item
                 if (items.count(point(ent))) {
                     switch (items[point(ent)].kind) {
@@ -400,7 +416,7 @@ shared_ptr<turn_t> next_turn(turn_t const & cur, map<player_id_t,output_t> const
 
 struct photon_t {
     turn_t turn;
-    output_t initial_output;
+    command_t initial_command;
     int age;
     int box, range, bomb; // difference
     double score;
@@ -414,25 +430,19 @@ photon_t default_photon(turn_t const & turn) {
     pho.score = evaluate_photon(pho);
     return pho;
 }
-shared_ptr<photon_t> update_photon(photon_t const & pho, int dy, int dx, command_t command) {
-    auto self = find_player(pho.turn.entities, pho.turn.config.self_id);
-    assert (self);
-    output_t output = default_output(*self);
-    output.y += dy;
-    output.x += dx;
-    output.command = command;
-    map<player_id_t,output_t> outputs;
-    outputs[self->id] = output;
+shared_ptr<photon_t> update_photon(photon_t const & pho, map<player_id_t,command_t> const & commands) {
+    player_id_t self_id = pho.turn.config.self_id;
     shared_ptr<photon_t> npho = make_shared<photon_t>(pho);
     next_turn_info_t info;
-    auto next_turn_ptr = next_turn(pho.turn, outputs, info);
+    auto next_turn_ptr = next_turn(pho.turn, commands, info);
     if (not next_turn_ptr) return nullptr;
     npho->turn = *next_turn_ptr;
-    if (pho.age == 0) npho->initial_output = output;
+    assert (commands.count(self_id));
+    if (pho.age == 0) npho->initial_command = commands.at(self_id);
     npho->age += 1;
-    npho->box   += info.box[  int(self->id)];
-    npho->range += info.range[int(self->id)];
-    npho->bomb  += info.bomb[ int(self->id)];
+    npho->box   += info.box[  int(self_id)];
+    npho->range += info.range[int(self_id)];
+    npho->bomb  += info.bomb[ int(self_id)];
     npho->score = evaluate_photon(*npho);
     return npho;
 }
@@ -453,54 +463,107 @@ private:
 
 public:
     AI(config_t const & a_config) {
-        random_device device;
-        engine = default_random_engine(device());
+        engine = default_random_engine(); // fixed seed
         config = a_config;
     }
     output_t think(turn_t const & a_turn) {
         // update info
         turns.push_back(turn);
         turn = a_turn;
+        player_t self = *find_player(turn.entities, config.self_id);
 
-        // output
-        player_t const & self = *find_player(turn.entities, config.self_id);
-        output_t output = default_output(self);
-        string message = "";
-        vector<shared_ptr<photon_t> > beam;
-        beam.emplace_back(make_shared<photon_t>(default_photon(turn)));
-        const int beam_width = 32;
-        repeat (age,14) {
-            map<tuple<int,int,command_t>, shared_ptr<photon_t> > used;
-            for (auto const & pho : beam) {
-                repeat (i,5) {
-                    repeat (j,2) {
-                        command_t command = j == 0 ? command_t::move : command_t::bomb;
-                        if (command == command_t::bomb and pho->age >= 3) continue;
-                        shared_ptr<photon_t> npho = update_photon(*pho, dy[i], dx[i], command);
+        // beam search for forbidden moves
+        set<command_t> forbidden;
+        repeat (initial_i,5) repeat (initial_j,2) {
+            command_t initial_command; {
+                action_t action = initial_j == 0 ? action_t::move : action_t::bomb;
+                initial_command = create_command(self, dy[initial_i], dx[initial_i], action);
+            }
+            vector<shared_ptr<photon_t> > beam; {
+                map<player_id_t,command_t> commands; {
+                    map<player_id_t,player_t> players = select_player(turn.entities);
+                    for (auto & it : players) {
+                        player_t & ent = it.second;
+                        commands[ent.id] = ent.id == self.id ?  initial_command : create_command(ent, 0, 0, action_t::bomb);
+                    }
+                }
+                photon_t pho = default_photon(turn);
+                shared_ptr<photon_t> npho = update_photon(pho, commands);
+                if (not npho) continue;
+                beam.emplace_back(npho);
+            }
+            const int beam_width = 8;
+            repeat (age,8) {
+                map<point_t,shared_ptr<photon_t> > used;
+                for (auto const & pho : beam) {
+                    repeat (i,5) {
+                        map<player_id_t,command_t> commands; {
+                            player_t self = *find_player(pho->turn.entities, pho->turn.config.self_id);
+                            commands[self.id] = create_command(self, dy[i], dx[i], action_t::move);
+                        }
+                        shared_ptr<photon_t> npho = update_photon(*pho, commands);
                         if (not npho) continue;
-                        auto & self = *find_player(npho->turn.entities, npho->turn.config.self_id);
-                        auto key = make_tuple(self.y, self.x, npho->initial_output.command);
+                        player_t self = *find_player(npho->turn.entities, npho->turn.config.self_id);
+                        if (used.count(point(self)) and used[point(self)]->score >= npho->score) continue;
+                        used[point(self)] = npho;
+                    }
+                }
+                beam.clear();
+                for (auto & it : used) beam.emplace_back(it.second);
+                whole(shuffle, beam, engine);
+                whole(sort, beam, [&](shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->score > b->score; }); // reversed
+                if (beam.size() > beam_width) beam.resize(beam_width);
+            }
+            if (beam.empty()) {
+                forbidden.insert(initial_command);
+            }
+        }
+
+        // beam search
+        command_t command = default_command(self); {
+            vector<shared_ptr<photon_t> > beam;
+            beam.emplace_back(make_shared<photon_t>(default_photon(turn)));
+            const int beam_width = 32;
+            repeat (age,14) {
+                map<tuple<action_t,int,int>, shared_ptr<photon_t> > used;
+                for (auto const & pho : beam) {
+                    repeat (i,5) repeat (j,2) {
+                        map<player_id_t,command_t> commands; {
+                            player_t self = *find_player(pho->turn.entities, pho->turn.config.self_id);
+                            action_t action = j == 0 ? action_t::move : action_t::bomb;
+                            command_t command = create_command(self, dy[i], dx[i], action);
+                            if (pho->age >= 3 and action == action_t::bomb) continue;
+                            if (pho->age == 0 and forbidden.count(command)) continue;
+                            commands[self.id] = command;
+                        }
+                        shared_ptr<photon_t> npho = update_photon(*pho, commands);
+                        if (not npho) continue;
+                        player_t self = *find_player(npho->turn.entities, npho->turn.config.self_id);
+                        auto key = make_tuple(npho->initial_command.action, self.y, self.x);
                         if (used.count(key) and used[key]->score >= npho->score) continue;
                         used[key] = npho;
                     }
                 }
-            }
-            beam.clear();
-            for (auto & it : used) beam.emplace_back(it.second);
-            whole(shuffle, beam, engine);
-            whole(sort, beam, [&](shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->score > b->score; }); // reversed
-            if (beam.size() > beam_width) beam.resize(beam_width);
-            if (not beam.empty()) {
-                output = beam.front()->initial_output;
+                beam.clear();
+                for (auto & it : used) beam.emplace_back(it.second);
+                whole(shuffle, beam, engine);
+                whole(sort, beam, [&](shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->score > b->score; }); // reversed
+                if (beam.size() > beam_width) beam.resize(beam_width);
+                if (not beam.empty()) {
+                    command = beam.front()->initial_command;
+                }
             }
         }
 
         // message
+        string message = "";
         if (message.empty()) {
             ostringstream oss;
             oss << "R" << self.range << "/B" << total_bomb(self.id, turn.entities);
             message = oss.str();
         }
+        output_t output;
+        output.command = command;
         output.message = message;
         // return
         outputs.push_back(output);
