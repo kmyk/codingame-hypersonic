@@ -36,6 +36,7 @@ point_t point(int y, int x) { return (point_t) { y, x }; }
 template <typename T>
 point_t point(T const & p) { return (point_t) { p.y, p.x }; }
 bool operator == (point_t a, point_t b) { return make_pair(a.y, a.x) == make_pair(b.y, b.x); }
+bool operator != (point_t a, point_t b) { return make_pair(a.y, a.x) != make_pair(b.y, b.x); }
 bool operator <  (point_t a, point_t b) { return make_pair(a.y, a.x) <  make_pair(b.y, b.x); }
 
 namespace primitive {
@@ -379,7 +380,7 @@ shared_ptr<turn_t> next_turn(turn_t const & cur, map<player_id_t,command_t> cons
                 nxt->entities.push_back(entity_cast(place_bomb(ent))); // don't add to map<point_t,player_t> bombs
             }
             // move
-            if (command.y != ent.y or command.x != ent.y) {
+            if (point(command) != point(ent)) {
                 if (not is_on_field(command.y, command.x, cur.config.height, cur.config.width)) return nullptr;
                 if (abs(command.y - ent.y) >= 2) return nullptr;
                 if (abs(command.x - ent.x) >= 2) return nullptr;
