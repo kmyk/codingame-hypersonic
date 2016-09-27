@@ -279,24 +279,19 @@ vector<vector<exploded_time_info_t> > exploded_time(turn_t const & turn) {
                 update(ny, nx, time, ent.owner);
                 bool obstructed = false;
                 if (obstructions.count(point(ny, nx))) {
+                    obstructed = true;
                     auto & nent = obstructions[point(ny, nx)];
                     // > Any bomb caught in an explosion is treated as if it had exploded at the very same moment.
                     // > Explosions do not go through obstructions such as boxes, items or other bombs, but are included on the cells the obstruction occupies.
                     // > A single obstruction may block the explosions of several bombs that explode on the same turn.
                     if (nent.type == entity_type_t::bomb and nent.bomb.time > time) {
                         explode(nent.bomb, time, used);
-                        obstructed = true;
-                    } else if (nent.type == entity_type_t::player) {
+                    } else if (nent.type == entity_type_t::item) {
                         used.insert(point(nent));
-                        obstructed = true;
                     }
                 }
-                if (field[ny][nx] == cell_t::wall) {
-                    obstructed = true;
-                } else if (is_box(field[ny][nx])) {
-                    used.insert(point(ny, nx));
-                    obstructed = true;
-                }
+                if (field[ny][nx] != cell_t::empty) obstructed = true;
+                if (is_box(field[ny][nx])) used.insert(point(ny, nx));
                 if (obstructed) {
                     break;
                 }
@@ -341,7 +336,7 @@ struct next_turn_info_t {
     int range[player_number];
     int bomb[player_number];
 };
-shared_ptr<turn_t> next_turn(turn_t const & cur, map<player_id_t,command_t> const & commands, next_turn_info_t & info) {
+shared_ptr<turn_t> next_turn(turn_t const & cur, vector<vector<exploded_time_info_t> > const & exptime, map<player_id_t,command_t> const & commands, next_turn_info_t & info) {
     info = {};
     shared_ptr<turn_t> nxt = make_shared<turn_t>();
     nxt->config = cur.config;
@@ -349,7 +344,6 @@ shared_ptr<turn_t> next_turn(turn_t const & cur, map<player_id_t,command_t> cons
     // bomb
     // > At the start of the round, all bombs have their countdown decreased by 1.
     // > Any bomb countdown that reaches 0 will cause the bomb to explode immediately, before players move.
-    vector<vector<exploded_time_info_t> > exptime = exploded_time(cur);
     map<point_t,item_t> items; // after explosion
     repeat (y, cur.config.height) {
         repeat (x, cur.config.width) {
@@ -454,14 +448,27 @@ struct photon_t {
     int age;
     int box, range, bomb; // difference
     double bonus;
+    vector<vector<exploded_time_info_t> > exptime;
     double score; // cached
 };
-double evaluate_photon(photon_t const & pho) {
-    return 5*pho.box + 1.2*pho.range + pho.bomb + pho.bonus; // very magic
+double evaluate_photon(photon_t const & pho) { // very magic
+    int h = pho.turn.config.height;
+    int w = pho.turn.config.width;
+    player_id_t self_id = pho.turn.config.self_id;
+    double score = 5*pho.box + 1.2*pho.range + pho.bomb + pho.bonus;
+    repeat (y,h) {
+        repeat (x,w) {
+            if (is_box(pho.turn.field[y][x]) and pho.exptime[y][x].time != inf and pho.exptime[y][x].owner[int(self_id)]) {
+                score += 5 - 2 * pho.exptime[y][x].time /(double) bomb_time;
+            }
+        }
+    }
+    return score;
 }
 photon_t default_photon(turn_t const & turn) {
     photon_t pho = {};
     pho.turn = turn;
+    pho.exptime = exploded_time(turn);
     pho.score = evaluate_photon(pho);
     return pho;
 }
@@ -469,7 +476,7 @@ shared_ptr<photon_t> update_photon(photon_t const & pho, map<player_id_t,command
     player_id_t self_id = pho.turn.config.self_id;
     shared_ptr<photon_t> npho = make_shared<photon_t>(pho);
     next_turn_info_t info;
-    auto next_turn_ptr = next_turn(pho.turn, commands, info);
+    auto next_turn_ptr = next_turn(pho.turn, pho.exptime, commands, info);
     if (not next_turn_ptr) return nullptr;
     npho->turn = *next_turn_ptr;
     assert (commands.count(self_id));
@@ -478,6 +485,7 @@ shared_ptr<photon_t> update_photon(photon_t const & pho, map<player_id_t,command
     npho->box   += info.box[  int(self_id)];
     npho->range += info.range[int(self_id)];
     npho->bomb  += info.bomb[ int(self_id)];
+    npho->exptime = exploded_time(npho->turn);
     npho->score = evaluate_photon(*npho);
     return npho;
 }
@@ -568,6 +576,15 @@ public:
                     if (pho->initial_command.action == action_t::bomb and pho->age <= 8) continue;
                     command = pho->initial_command;
                     break;
+                }
+                if (message.empty() and beam.empty()) {
+                    if (age == 0) {
+                        message = "Sayonara!";
+                    } else if (age <= 9) {
+                        message = "Aieee";
+                    } else {
+                        message = "Kowai";
+                    }
                 }
             }
         }
