@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <functional>
+#include <chrono>
 #include <sstream>
 #include <cassert>
 #define repeat(i,n) for (int i = 0; (i) < (n); ++(i))
@@ -19,6 +20,7 @@
 #define whole(f,x,...) ([&](decltype((x)) y) { return (f)(begin(y), end(y), ## __VA_ARGS__); })(x)
 typedef long long ll;
 using namespace std;
+using namespace std::chrono;
 template <class T> void setmax(T & a, T const & b) { if (a < b) a = b; }
 template <class T> void setmin(T & a, T const & b) { if (b < a) a = b; }
 template <typename T> vector<vector<T> > vectors(T a, size_t h, size_t w) { return vector<vector<T> >(h, vector<T>(w, a)); }
@@ -493,10 +495,15 @@ struct photon_t {
     output_t initial_output;
     int age;
     int box, range, bomb; // difference
+    double score;
 };
+double evaluate_photon(photon_t const & pho) {
+    return 4*pho.box + pho.range + pho.bomb; // very magic
+}
 photon_t default_photon(turn_t const & turn) {
     photon_t pho = {};
     pho.turn = turn;
+    pho.score = evaluate_photon(pho);
     return pho;
 }
 photon_t update_photon(photon_t const & pho, int dy, int dx, command_t command, bool *failure = nullptr) {
@@ -520,6 +527,7 @@ photon_t update_photon(photon_t const & pho, int dy, int dx, command_t command, 
     npho.box   += info.box[  int(self->id)];
     npho.range += info.range[int(self->id)];
     npho.bomb  += info.bomb[ int(self->id)];
+    npho.score = evaluate_photon(npho);
     return npho;
 }
 
@@ -556,46 +564,33 @@ public:
         // output
         output_t output = default_output(self);
         string message = "";
-        vector<photon_t> beam; {
-            const photon_t pho = default_photon(turn);
-            repeat (i,5) {
-                repeat (j,2) {
-                    bool failure;
-                    assert (find_player(pho.turn.entities, pho.turn.config.self_id));
-                    photon_t npho = update_photon(pho, dy[i], dx[i], j ? command_t::bomb : command_t::move, &failure);
-                    if (failure) continue;
-                    beam.push_back(npho);
-                }
-            }
-        }
-        if (beam.empty()) {
-            message = "good bye";
-        } else {
-            output = beam[randint(0, beam.size()-1)].initial_output;
-        }
-        repeat (age,8) {
-            vector<photon_t> nbeam;
-            set<tuple<int,int,command_t> > used;
+        vector<photon_t> beam;
+        beam.push_back(default_photon(turn));
+        const int beam_width = 32;
+        repeat (age,12) {
+            map<tuple<int,int,command_t>, photon_t> used;
             for (auto const & pho : beam) {
                 repeat (i,5) {
-                    bool failure;
-                    photon_t npho = update_photon(pho, dy[i], dx[i], command_t::move, &failure);
-                    if (failure) continue;
-                    auto & self = *find_player(npho.turn.entities, npho.turn.config.self_id);
-                    auto key = make_tuple(self.y, self.x, npho.initial_output.command);
-                    if (used.count(key)) continue;
-                    used.insert(key);
-                    nbeam.push_back(npho);
+                    repeat (j,2) {
+                        command_t command = j == 0 ? command_t::move : command_t::bomb;
+                        if (command == command_t::bomb and pho.age >= 2) continue;
+                        bool failure;
+                        photon_t npho = update_photon(pho, dy[i], dx[i], command, &failure);
+                        if (failure) continue;
+                        auto & self = *find_player(npho.turn.entities, npho.turn.config.self_id);
+                        auto key = make_tuple(self.y, self.x, npho.initial_output.command);
+                        if (used.count(key) and used[key].score >= npho.score) continue;
+                        used[key] = npho;
+                    }
                 }
             }
             beam.clear();
-            beam.swap(nbeam);
+            for (auto & it : used) beam.push_back(it.second);
+            whole(sort, beam, [&](photon_t const & a, photon_t const & b) { return a.score > b.score; }); // reversed
+            if (beam.size() > beam_width) beam.resize(beam_width);
             if (not beam.empty()) {
-                output = beam[randint(0, beam.size()-1)].initial_output;
+                output = beam.front().initial_output;
             }
-        }
-        if (message.empty() and beam.empty()) {
-            message = "I'm dying";
         }
 
         // message
@@ -648,8 +643,12 @@ int main() {
     AI ai(config);
     while (true) {
         turn_t turn = { config }; cin >> turn;
+        high_resolution_clock::time_point begin = high_resolution_clock::now();
         output_t output = ai.think(turn);
         cout << output << endl;
         ai.debug_print();
+        high_resolution_clock::time_point end = high_resolution_clock::now();
+        ll count = duration_cast<microseconds>(end - begin).count();
+        cerr << "elapsed time: " << count/1000 << "." << count%1000 << "msec" << endl;
     }
 }
