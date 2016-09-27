@@ -35,7 +35,8 @@ struct point_t { int y, x; };
 point_t point(int y, int x) { return (point_t) { y, x }; }
 template <typename T>
 point_t point(T const & p) { return (point_t) { p.y, p.x }; }
-bool operator < (point_t a, point_t b) { return make_pair(a.y, a.x) < make_pair(b.y, b.x); }
+bool operator == (point_t a, point_t b) { return make_pair(a.y, a.x) == make_pair(b.y, b.x); }
+bool operator <  (point_t a, point_t b) { return make_pair(a.y, a.x) <  make_pair(b.y, b.x); }
 
 namespace primitive {
 
@@ -470,7 +471,8 @@ public:
         // update info
         turns.push_back(turn);
         turn = a_turn;
-        player_t self = *find_player(turn.entities, config.self_id);
+        map<player_id_t,player_t> players = select_player(turn.entities);
+        player_t self = players[turn.config.self_id];
 
         // beam search
         command_t command = default_command(self); {
@@ -482,16 +484,26 @@ public:
                 for (auto const & pho : beam) {
                     repeat (i,5) repeat (j,2) {
                         map<player_id_t,command_t> commands; {
-                            player_t self = *find_player(pho->turn.entities, pho->turn.config.self_id);
+                            player_t curself = *find_player(pho->turn.entities, pho->turn.config.self_id);
                             action_t action = j == 0 ? action_t::move : action_t::bomb;
-                            command_t command = create_command(self, dy[i], dx[i], action);
+                            command_t command = create_command(curself, dy[i], dx[i], action);
                             if (pho->age >= 3 and action == action_t::bomb) continue;
-                            commands[self.id] = command;
+                            commands[curself.id] = command;
                         }
                         shared_ptr<photon_t> npho = update_photon(*pho, commands);
                         if (not npho) continue;
-                        player_t self = *find_player(npho->turn.entities, npho->turn.config.self_id);
-                        auto key = make_tuple(npho->initial_command.action, self.y, self.x);
+                        player_t nxtself = *find_player(npho->turn.entities, npho->turn.config.self_id);
+                        if (age != 0) {
+                            for (auto & it : players) {
+                                player_t ent = it.second;
+                                if (ent.id == self.id) continue;
+                                if (point(ent) == point(nxtself)) {
+                                    npho = nullptr;
+                                }
+                            }
+                        }
+                        if (not npho) continue;
+                        auto key = make_tuple(npho->initial_command.action, nxtself.y, nxtself.x);
                         if (used.count(key) and used[key]->score >= npho->score) continue;
                         used[key] = npho;
                     }
@@ -501,8 +513,10 @@ public:
                 whole(shuffle, beam, engine);
                 whole(sort, beam, [&](shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->score > b->score; }); // reversed
                 if (beam.size() > beam_width) beam.resize(beam_width);
-                if (not beam.empty()) {
-                    command = beam.front()->initial_command;
+                for (auto & pho : beam) {
+                    if (pho->initial_command.action == action_t::bomb and pho->age <= 8) continue;
+                    command = pho->initial_command;
+                    break;
                 }
             }
         }
