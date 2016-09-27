@@ -368,6 +368,7 @@ shared_ptr<turn_t> next_turn(turn_t const & cur, map<player_id_t,output_t> const
                 if (abs(output.x - ent.x) >= 2) return nullptr;
                 if (bombs.count(point(output))) return nullptr;
                 if (nxt->field[output.y][output.x] != cell_t::empty) return nullptr;
+                if ( cur.field[output.y][output.x] != cell_t::empty) return nullptr; // It seems that they cannot move onto a box, even if the box is broken in the turn.
                 ent.y = output.y;
                 ent.x = output.x;
                 // get item
@@ -465,31 +466,32 @@ public:
         player_t const & self = *find_player(turn.entities, config.self_id);
         output_t output = default_output(self);
         string message = "";
-        vector<photon_t> beam;
-        beam.push_back(default_photon(turn));
+        vector<shared_ptr<photon_t> > beam;
+        beam.emplace_back(make_shared<photon_t>(default_photon(turn)));
         const int beam_width = 32;
-        repeat (age,12) {
-            map<tuple<int,int,command_t>, photon_t> used;
+        repeat (age,14) {
+            map<tuple<int,int,command_t>, shared_ptr<photon_t> > used;
             for (auto const & pho : beam) {
                 repeat (i,5) {
                     repeat (j,2) {
                         command_t command = j == 0 ? command_t::move : command_t::bomb;
-                        if (command == command_t::bomb and pho.age >= 2) continue;
-                        shared_ptr<photon_t> npho = update_photon(pho, dy[i], dx[i], command);
+                        if (command == command_t::bomb and pho->age >= 3) continue;
+                        shared_ptr<photon_t> npho = update_photon(*pho, dy[i], dx[i], command);
                         if (not npho) continue;
                         auto & self = *find_player(npho->turn.entities, npho->turn.config.self_id);
                         auto key = make_tuple(self.y, self.x, npho->initial_output.command);
-                        if (used.count(key) and used[key].score >= npho->score) continue;
-                        used[key] = *npho;
+                        if (used.count(key) and used[key]->score >= npho->score) continue;
+                        used[key] = npho;
                     }
                 }
             }
             beam.clear();
-            for (auto & it : used) beam.push_back(it.second);
-            whole(sort, beam, [&](photon_t const & a, photon_t const & b) { return a.score > b.score; }); // reversed
+            for (auto & it : used) beam.emplace_back(it.second);
+            whole(shuffle, beam, engine);
+            whole(sort, beam, [&](shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->score > b->score; }); // reversed
             if (beam.size() > beam_width) beam.resize(beam_width);
             if (not beam.empty()) {
-                output = beam.front().initial_output;
+                output = beam.front()->initial_output;
             }
         }
 
