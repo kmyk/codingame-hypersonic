@@ -23,8 +23,8 @@ template <class T> void setmax(T & a, T const & b) { if (a < b) a = b; }
 template <class T> void setmin(T & a, T const & b) { if (b < a) a = b; }
 template <typename T> vector<vector<T> > vectors(T a, size_t h, size_t w) { return vector<vector<T> >(h, vector<T>(w, a)); }
 template <typename T> T input(istream & in) { T a; in >> a; return a; }
-const int dy[] = { -1, 1, 0, 0 };
-const int dx[] = { 0, 0, 1, -1 };
+const int dy[] = { -1, 1, 0, 0, 0 };
+const int dx[] = { 0, 0, 1, -1, 0 };
 bool is_on_field(int y, int x, int h, int w) { return 0 <= y and y < h and 0 <= x and x < w; }
 const int inf = 1e9+7;
 
@@ -368,12 +368,16 @@ map<player_id_t,player_t> select_player(vector<entity_t> & entities) {
 }
 
 struct next_turn_info_t {
+    bool failure;
+    bool killed[player_number];
     int box[player_number];
     int range[player_number];
     int bomb[player_number];
 };
-turn_t next_turn(turn_t const & cur, map<player_id_t,output_t> const & command, next_turn_info_t *info) {
-    if (info) *info = {};
+turn_t next_turn(turn_t const & cur, map<player_id_t,output_t> const & command, next_turn_info_t *info = nullptr) {
+    if (not info) { next_turn_info_t local; return next_turn(cur, command, &local); }
+    *info = {};
+    auto should = [&](bool p) { if (not p) info->failure = true; };
     turn_t nxt = {};
     nxt.config = cur.config;
     nxt.field = cur.field;
@@ -408,7 +412,14 @@ turn_t next_turn(turn_t const & cur, map<player_id_t,output_t> const & command, 
     map<player_id_t,player_t> players; // after explosion
     map<point_t,bomb_t> bombs; // after explosion, before placing
     for (entity_t ent : cur.entities) {
-        if (exptime[ent.y][ent.x].time-1 == 0) continue;
+        if (exptime[ent.y][ent.x].time-1 == 0) {
+            if (ent.type == entyty_type_t::player) {
+                info->killed[int(ent.player.id)] = true;
+                should (ent.player.id != cur.config.self_id);
+                if (info->failure) return cur;
+            }
+            continue;
+        }
         switch (ent.type) {
             case entyty_type_t::player:
                 players[ent.player.id] = ent.player;
@@ -433,17 +444,21 @@ turn_t next_turn(turn_t const & cur, map<player_id_t,output_t> const & command, 
             output_t output = command.at(ent.id);
             // place bomb
             if (output.command == command_t::bomb) {
-                assert (ent.bomb >= 1);
-                assert (not bombs.count(point(ent)));
+                should (ent.bomb >= 1);
+                should (not bombs.count(point(ent)));
+                if (info->failure) return cur;
                 ent.bomb -= 1;
                 nxt.entities.push_back(entity_cast(place_bomb(ent))); // don't add to map<point_t,player_t> bombs
             }
             // move
             if (output.y != ent.y or output.x != ent.y) {
-                assert (abs(output.y - ent.y) <= 1);
-                assert (abs(output.x - ent.x) <= 1);
-                assert (not bombs.count(point(output)));
-                assert (nxt.field[output.y][output.x] == cell_t::empty);
+                should (is_on_field(output.y, output.x, cur.config.height, cur.config.width));
+                if (info->failure) return cur;
+                should (abs(output.y - ent.y) <= 1);
+                should (abs(output.x - ent.x) <= 1);
+                should (not bombs.count(point(output)));
+                should (nxt.field[output.y][output.x] == cell_t::empty);
+                if (info->failure) return cur;
                 ent.y = output.y;
                 ent.x = output.x;
                 // get item
@@ -484,23 +499,28 @@ photon_t default_photon(turn_t const & turn) {
     pho.turn = turn;
     return pho;
 }
-photon_t update_photon(photon_t const & pho, int dy, int dx, command_t command) {
-    auto & self = *find_player(pho.turn.entities, pho.turn.config.self_id);
-    output_t output = default_output(self);
+photon_t update_photon(photon_t const & pho, int dy, int dx, command_t command, bool *failure = nullptr) {
+    if (not failure) { bool local; return update_photon(pho, dy, dx, command, &local); }
+    *failure = false;
+    auto self = find_player(pho.turn.entities, pho.turn.config.self_id);
+    assert (self);
+    output_t output = default_output(*self);
     output.y += dy;
     output.x += dx;
     output.command = command;
     map<player_id_t,output_t> outputs;
-    outputs[self.id] = output;
+    outputs[self->id] = output;
     photon_t npho = pho;
     next_turn_info_t info;
     npho.turn = next_turn(pho.turn, outputs, &info);
+    if (info.failure) *failure = true;
+    if (*failure) return pho;
     if (pho.age == 0) npho.initial_output = output;
     npho.age += 1;
-    npho.box   += info.box[  int(self.id)];
-    npho.range += info.range[int(self.id)];
-    npho.bomb  += info.bomb[ int(self.id)];
-    return pho;
+    npho.box   += info.box[  int(self->id)];
+    npho.range += info.range[int(self->id)];
+    npho.bomb  += info.bomb[ int(self->id)];
+    return npho;
 }
 
 class AI {
@@ -535,13 +555,56 @@ public:
 
         // output
         output_t output = default_output(self);
+        string message = "";
+        vector<photon_t> beam; {
+            const photon_t pho = default_photon(turn);
+            repeat (i,5) {
+                repeat (j,2) {
+                    bool failure;
+                    assert (find_player(pho.turn.entities, pho.turn.config.self_id));
+                    photon_t npho = update_photon(pho, dy[i], dx[i], j ? command_t::bomb : command_t::move, &failure);
+                    if (failure) continue;
+                    beam.push_back(npho);
+                }
+            }
+        }
+        if (beam.empty()) {
+            message = "good bye";
+        } else {
+            output = beam[randint(0, beam.size()-1)].initial_output;
+        }
+        repeat (age,8) {
+            vector<photon_t> nbeam;
+            set<tuple<int,int,command_t> > used;
+            for (auto const & pho : beam) {
+                repeat (i,5) {
+                    bool failure;
+                    photon_t npho = update_photon(pho, dy[i], dx[i], command_t::move, &failure);
+                    if (failure) continue;
+                    auto & self = *find_player(npho.turn.entities, npho.turn.config.self_id);
+                    auto key = make_tuple(self.y, self.x, npho.initial_output.command);
+                    if (used.count(key)) continue;
+                    used.insert(key);
+                    nbeam.push_back(npho);
+                }
+            }
+            beam.clear();
+            beam.swap(nbeam);
+            if (not beam.empty()) {
+                output = beam[randint(0, beam.size()-1)].initial_output;
+            }
+        }
+        if (message.empty() and beam.empty()) {
+            message = "I'm dying";
+        }
 
-        // hint message
-        {
+        // message
+        if (message.empty()) {
             ostringstream oss;
             oss << "R" << self.range << "/B" << total_bomb(self_id, turn.entities);
-            output.message = oss.str();
+            message = oss.str();
         }
+        output.message = message;
         // return
         outputs.push_back(output);
         return output;
