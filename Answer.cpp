@@ -512,6 +512,7 @@ public:
         multimap<point_t,entity_t> ent_at = entity_multimap(turn.entities);
 
         // beam search
+        string message = "";
         command_t command = default_command(self); {
             map<point_t,double> boxpot;
             repeat (i,5) {
@@ -572,12 +573,6 @@ public:
         }
 
         // message
-        string message = "";
-        if (message.empty()) {
-            ostringstream oss;
-            oss << "R" << self.range << "/B" << total_bomb(self.id, turn.entities);
-            message = oss.str();
-        }
         output_t output;
         output.command = command;
         output.message = message;
