@@ -457,8 +457,8 @@ double evaluate_photon(photon_t const & pho) { // very magic
     map<player_id_t,player_t> players = select_player(pho.turn.entities);
     player_t self = players[pho.turn.config.self_id];
     double score = 0;
-    const double box_base = 9;
-    const double box_delta = 0.8;
+    const double box_base = 10;
+    const double box_delta = 1;
     score += box_base  * pho.box;
     score += box_delta * pho.box_acc;
     repeat (y,h) {
@@ -468,12 +468,11 @@ double evaluate_photon(photon_t const & pho) { // very magic
             }
         }
     }
-    score += 0.9 * min(5, pho.range) + 0.3 * pho.range;
-    score += 1.1 * min(4, pho.bomb)  + 0.5 * pho.bomb;
-    score += 0.1 * min(bomb_time+1, pho.exptime[self.y][self.x].time);
-    if (self.bomb == 0) score -= 0.2;
-    score -= 0.1 * abs(self.y - h/2.);
-    score -= 0.1 * abs(self.x - w/2.);
+    score += 0.8 * min(5, pho.range) + 0.4 * pho.range;
+    score += 2.0 * min(2, pho.bomb)  + 0.8 * min(4, pho.bomb)  + 0.5 * pho.bomb;
+    score -= 0.2 * (pho.bomb - self.bomb);
+    score -= 0.05 * abs(self.y - h/2.);
+    score -= 0.05 * abs(self.x - w/2.);
     // score -= 2 * players.size(); // TODO: 実際には相手は回避するので、回避不能性を見なければ
     score += pho.bonus;
     return score;
@@ -542,7 +541,7 @@ public:
             vector<shared_ptr<photon_t> > beam;
             beam.emplace_back(make_shared<photon_t>(initial_photon(turn)));
             const int beam_width = 32;
-            const int place_bomb_time = 4;
+            const int place_bomb_time = 10;
             const int simulation_time = 10;
             repeat (age, simulation_time) {
                 map<tuple<command_t,point_t>, shared_ptr<photon_t> > used;
