@@ -357,26 +357,35 @@ shared_ptr<turn_t> next_turn(turn_t const & cur, vector<vector<exploded_time_inf
     // split entities
     map<player_id_t,player_t> players; // after explosion
     map<point_t,bomb_t> bombs; // after explosion, before placing
+    array<int,player_number> exploded_bombs = {};
     for (entity_t ent : cur.entities) {
         if (exptime[ent.y][ent.x].time-1 == 0) {
-            if (ent.type == entity_type_t::player) {
-                info.killed[int(ent.player.id)] = true;
-                if (ent.player.id == cur.config.self_id) return nullptr;
+            switch (ent.type) {
+                case entity_type_t::player:
+                    info.killed[int(ent.player.id)] = true;
+                    if (ent.player.id == cur.config.self_id) return nullptr;
+                    break;
+                case entity_type_t::bomb:
+                    exploded_bombs[int(ent.bomb.owner)] += 1;
+                    break;
+                case entity_type_t::item:
+                    // nop
+                    break;
             }
-            continue;
-        }
-        switch (ent.type) {
-            case entity_type_t::player:
-                players[ent.player.id] = ent.player;
-                break;
-            case entity_type_t::bomb:
-                ent.bomb.time -= 1;
-                bombs[point(ent)] = ent.bomb;
-                nxt->entities.push_back(ent);
-                break;
-            case entity_type_t::item:
-                items[point(ent)] = ent.item;
-                break;
+        } else {
+            switch (ent.type) {
+                case entity_type_t::player:
+                    players[ent.player.id] = ent.player;
+                    break;
+                case entity_type_t::bomb:
+                    ent.bomb.time -= 1;
+                    bombs[point(ent)] = ent.bomb;
+                    nxt->entities.push_back(ent);
+                    break;
+                case entity_type_t::item:
+                    items[point(ent)] = ent.item;
+                    break;
+            }
         }
     }
     // player
@@ -419,6 +428,7 @@ shared_ptr<turn_t> next_turn(turn_t const & cur, vector<vector<exploded_time_inf
                 }
             }
         }
+        ent.bomb += exploded_bombs[int(ent.id)]; // after placing a bomb
         player_exists.insert(point(ent));
         nxt->entities.push_back(entity_cast(ent));
     }
