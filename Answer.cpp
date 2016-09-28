@@ -156,9 +156,12 @@ namespace primitive {
         command_t command;
         string message;
     };
-    ostream & operator << (ostream & out, output_t const & a) {
+    ostream & operator << (ostream & out, command_t const & a) {
         const string table[] = { "MOVE", "BOMB" };
-        return out << table[int(a.command.action)] << ' ' << a.command.x << ' ' << a.command.y << ' ' << a.message;
+        return out << table[int(a.action)] << ' ' << a.x << ' ' << a.y;
+    }
+    ostream & operator << (ostream & out, output_t const & a) {
+        return out << a.command << ' ' << a.message;
     }
     bool operator < (command_t const & a, command_t const & b) { return make_tuple(a.action, a.y, a.x) < make_tuple(b.action, b.y, b.x); }
     command_t default_command(player_t const & self) {
@@ -318,6 +321,49 @@ shared_ptr<player_t> find_player(vector<entity_t> const & entities, player_id_t 
     auto players = select_player(entities);
     return players.count(id) ? make_shared<player_t>(players[id]) : nullptr;
 }
+map<point_t,bomb_t> select_bomb(vector<entity_t> const & entities) {
+    map<point_t,bomb_t> bombs;
+    for (auto & ent : entities) {
+        if (ent.type == entity_type_t::bomb) {
+            bombs[point(ent)] = ent.bomb;
+        }
+    }
+    return bombs;
+}
+
+bool is_valid_commands(turn_t const & turn, map<player_id_t,command_t> const & commands) {
+    vector<player_t> players;
+    set<point_t> bombs;
+    for (entity_t ent : turn.entities) {
+        switch (ent.type) {
+            case entity_type_t::player:
+                players.push_back(ent.player);
+                break;
+            case entity_type_t::bomb:
+                bombs.insert(point(ent));
+                break;
+            case entity_type_t::item:
+                // nop
+                break;
+        }
+    }
+    for (player_t & ent : players) {
+        if (commands.count(ent.id)) {
+            command_t command = commands.at(ent.id);
+            if (point(command) != point(ent)) {
+                if (not is_on_field(command.y, command.x, turn.config.height, turn.config.width)) return false;
+                if (abs(command.y - ent.y) + abs(command.x - ent.x) >= 2) return false;
+                if (turn.field[command.y][command.x] != cell_t::empty) return false;
+                if (bombs.count(point(command))) return false;
+            }
+            if (command.action == action_t::bomb) {
+                if (ent.bomb == 0) return false;
+                if (bombs.count(point(ent))) return false;
+            }
+        }
+    }
+    return true;
+}
 
 struct next_turn_info_t {
     bool killed[player_number];
@@ -326,6 +372,7 @@ struct next_turn_info_t {
     int bomb[player_number];
 };
 shared_ptr<turn_t> next_turn(turn_t const & cur, vector<vector<exploded_time_info_t> > const & exptime, map<player_id_t,command_t> const & commands, next_turn_info_t & info) {
+    if (not is_valid_commands(cur, commands)) return nullptr;
     info = {};
     shared_ptr<turn_t> nxt = make_shared<turn_t>();
     nxt->config = cur.config;
@@ -398,19 +445,11 @@ shared_ptr<turn_t> next_turn(turn_t const & cur, vector<vector<exploded_time_inf
             command_t command = commands.at(ent.id);
             // place bomb
             if (command.action == action_t::bomb) {
-                if (ent.bomb == 0) return nullptr;
-                if (bombs.count(point(ent))) return nullptr;
                 ent.bomb -= 1;
                 nxt->entities.push_back(entity_cast(place_bomb(ent))); // don't add to map<point_t,player_t> bombs
             }
             // move
             if (point(command) != point(ent)) {
-                if (not is_on_field(command.y, command.x, cur.config.height, cur.config.width)) return nullptr;
-                if (abs(command.y - ent.y) >= 2) return nullptr;
-                if (abs(command.x - ent.x) >= 2) return nullptr;
-                if (bombs.count(point(command))) return nullptr;
-                if (nxt->field[command.y][command.x] != cell_t::empty) return nullptr;
-                if ( cur.field[command.y][command.x] != cell_t::empty) return nullptr; // It seems that they cannot move onto a box, even if the box is broken in the turn.
                 ent.y = command.y;
                 ent.x = command.x;
                 // get item
@@ -439,6 +478,76 @@ shared_ptr<turn_t> next_turn(turn_t const & cur, vector<vector<exploded_time_inf
         nxt->entities.push_back(entity_cast(ent));
     }
     return nxt;
+}
+
+bool is_survivable(player_id_t self_id, turn_t const & turn, vector<vector<exploded_time_info_t> > const & exptime) {
+    shared_ptr<player_t> self = find_player(turn.entities, self_id);
+    if (not self) return false;
+    if (exptime[self->y][self->x].time-1 == 0) return false;
+    int h = turn.config.height;
+    int w = turn.config.width;
+    set<point_t> bombs;
+    for (auto & ent : turn.entities) {
+        if (ent.type == entity_type_t::bomb) {
+            bombs.insert(point(ent));
+        }
+    }
+    vector<vector<bool> > cur = vectors(false, h, w);
+    cur[self->y][self->x] = true;
+    repeat (t, bomb_time) {
+        bool exists = false;
+        vector<vector<bool> > prv = cur;
+        cur = vectors(false, h, w);
+        repeat (y, h) repeat (x, w) {
+            if (not prv[y][x]) continue;
+            if (exptime[y][x].time-1 == t) continue; // TODO: 同じ座標を異なる複数の時刻に爆風が通るのを漏らしてる
+            repeat (i,5) {
+                int ny = y + dy[i];
+                int nx = x + dx[i];
+                if (not is_on_field(ny, nx, h, w)) continue;
+                if (turn.field[ny][nx] == cell_t::wall) continue;
+                if (is_box(turn.field[ny][nx]) and exptime[ny][nx].time-1 >= t) continue;
+                if (point(ny, nx) != point(y, x) and bombs.count(point(ny, nx)) and exptime[ny][nx].time-1 >= t) continue;
+                cur[ny][nx] = true;
+                exists = true;
+            }
+        }
+        if (not exists) return false;
+    }
+    return true;
+}
+
+bool is_survivable_with_commands(player_id_t self_id, vector<map<player_id_t,command_t> > const & commands, turn_t const & a_turn, vector<vector<exploded_time_info_t> > const & a_exptime) {
+    turn_t turn = a_turn;
+    vector<vector<exploded_time_info_t> > exptime = a_exptime;
+    repeat (t, int(commands.size())) {
+        if (not find_player(turn.entities, self_id)) return false;
+        next_turn_info_t info;
+        shared_ptr<turn_t> nturn = next_turn(turn, exptime, commands[t], info);
+        if (not nturn) return false;
+        turn = *nturn;
+        exptime = exploded_time(turn);
+    }
+    if (not find_player(turn.entities, self_id)) return false;
+    return is_survivable(self_id, turn, exptime);
+}
+
+set<command_t> forbidden_commands(turn_t const & turn, vector<map<player_id_t,command_t> > const & commands_base) {
+    vector<vector<exploded_time_info_t> > exptime = exploded_time(turn);
+    player_t self = *find_player(turn.entities, turn.config.self_id);
+    set<command_t> forbidden;
+    const action_t actions[2] = { action_t::bomb, action_t::move }; // the first is bomb
+    repeat (i,5) repeat (j,2) {
+        vector<map<player_id_t,command_t> > commands = commands_base;
+        if (commands.empty()) commands.emplace_back();
+        commands[0][self.id] = create_command(self, dy[i], dx[i], actions[j]);
+        if (is_survivable_with_commands(self.id, commands, turn, exptime)) {
+            break; // if true with placing a bomb, then true without a bomb
+        } else {
+            forbidden.insert(commands[0][self.id]);
+        }
+    }
+    return forbidden;
 }
 
 struct photon_t {
@@ -524,16 +633,33 @@ public:
         engine = default_random_engine(); // fixed seed
         config = a_config;
     }
-    output_t think(turn_t const & a_turn) {
+    output_t think(turn_t const & turn) {
+        // prepare
         high_resolution_clock::time_point clock_begin = high_resolution_clock::now();
-        // update info
-        turns.push_back(turn);
-        turn = a_turn;
         int height = config.height;
         int width  = config.width;
         map<player_id_t,player_t> players = select_player(turn.entities);
         player_t self = players[turn.config.self_id];
         multimap<point_t,entity_t> ent_at = entity_multimap(turn.entities);
+
+        // to survive
+        set<command_t> forbidden; {
+            vector<vector<exploded_time_info_t> > exptime = exploded_time(turn);
+            vector<map<player_id_t,command_t> > commands_base(1);
+            map<point_t,bomb_t> bombs = select_bomb(turn.entities);
+            for (auto & it : players) {
+                player_t & ent = it.second;
+                if (ent.id != self.id) {
+                    if (ent.bomb == 0) continue;
+                    if (bombs.count(point(ent))) continue;
+                    commands_base[0][ent.id] = create_command(ent, 0, 0, action_t::bomb);
+                }
+            }
+            forbidden = forbidden_commands(turn, commands_base);
+            if (forbidden.size() == 10) {
+                forbidden.clear(); // TODO: しかたないから無視する ひとつ前の時点で気付くべきだったということ
+            }
+        }
 
         // beam search
         string message = "";
@@ -551,24 +677,14 @@ public:
                             player_t curself = *find_player(pho->turn.entities, pho->turn.config.self_id);
                             action_t action = j == 0 ? action_t::move : action_t::bomb;
                             command_t command = create_command(curself, dy[i], dx[i], action);
+                            if (pho->age == 0 and forbidden.count(command)) continue;
                             if (pho->age >= place_bomb_time and action == action_t::bomb) continue;
-                            if (not is_on_field(command.y, command.x, height, width)) continue;
                             commands[curself.id] = command;
                         }
                         shared_ptr<photon_t> npho = update_photon(*pho, commands);
                         if (not npho) continue;
-                        player_t nxtself = *find_player(npho->turn.entities, npho->turn.config.self_id);
-                        if (age != 0) {
-                            for (auto & it : players) {
-                                player_t ent = it.second;
-                                if (ent.id == self.id) continue;
-                                if (point(ent) == point(nxtself)) {
-                                    npho = nullptr;
-                                }
-                            }
-                        }
-                        if (not npho) continue;
                         npho->bonus = uniform_real_distribution<double>(- 0.2, 0.2)(engine);
+                        player_t nxtself = *find_player(npho->turn.entities, npho->turn.config.self_id);
                         auto signature = make_tuple(npho->initial_command, point(nxtself));
                         if (used.count(signature) and used[signature]->score >= npho->score) continue;
                         used[signature] = npho;
@@ -587,10 +703,8 @@ public:
                 if (message.empty() and beam.empty()) {
                     if (age == 0) {
                         message = "Sayonara!";
-                    } else if (age <= 9) {
-                        message = "Aieee"; // TODO: 予測がまだやっぱりバグ残ってる
                     } else {
-                        message = "Kowai";
+                        message = "Aieee";
                     }
                 }
                 // time limit
@@ -603,7 +717,7 @@ public:
             }
         }
 
-        // return
+        // log
         high_resolution_clock::time_point clock_end = high_resolution_clock::now(); {
             ll clock_count = duration_cast<milliseconds>(clock_end - clock_begin).count();
             ostringstream oss;
@@ -614,6 +728,9 @@ public:
             }
             message = oss.str();
         }
+        // update info
+        turns.push_back(turn);
+        // return
         output_t output;
         output.command = command;
         output.message = message;
