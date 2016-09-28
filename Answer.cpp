@@ -1,3 +1,4 @@
+#pragma GCC optimize ("-O3")
 #include <iostream>
 #include <vector>
 #include <algorithm>
