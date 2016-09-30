@@ -1,4 +1,4 @@
-#pragma GCC optimize ("-O3")
+#pragma GCC optimize "O3,omit-frame-pointer,inline"
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -578,7 +578,7 @@ double evaluate_photon(photon_t const & pho) { // very magic
         }
     }
     score += 0.8 * min(5, pho.range) + 0.4 * pho.range;
-    score += 2.0 * min(2, pho.bomb)  + 0.8 * min(4, pho.bomb)  + 0.5 * pho.bomb;
+    score += 3.0 * min(2, pho.bomb)  + 1.1 * min(4, pho.bomb)  + 0.5 * pho.bomb;
     score -= 0.2 * (pho.bomb - self.bomb);
     score -= 0.05 * abs(self.y - h/2.);
     score -= 0.05 * abs(self.x - w/2.);
@@ -657,6 +657,10 @@ public:
             }
             forbidden = forbidden_commands(turn, commands_base);
             if (forbidden.size() == 10) {
+                commands_base.clear();
+                forbidden = forbidden_commands(turn, commands_base);
+            }
+            if (forbidden.size() == 10) {
                 forbidden.clear(); // TODO: しかたないから無視する ひとつ前の時点で気付くべきだったということ
             }
         }
@@ -666,7 +670,7 @@ public:
         command_t command = default_command(self); {
             vector<shared_ptr<photon_t> > beam;
             beam.emplace_back(make_shared<photon_t>(initial_photon(turn)));
-            const int beam_width = 32;
+            const int beam_width = 48;
             const int place_bomb_time = 10;
             const int simulation_time = 10;
             repeat (age, simulation_time) {
@@ -677,8 +681,8 @@ public:
                             player_t curself = *find_player(pho->turn.entities, pho->turn.config.self_id);
                             action_t action = j == 0 ? action_t::move : action_t::bomb;
                             command_t command = create_command(curself, dy[i], dx[i], action);
-                            if (pho->age == 0 and forbidden.count(command)) continue;
-                            if (pho->age >= place_bomb_time and action == action_t::bomb) continue;
+                            if (age == 0 and forbidden.count(command)) continue;
+                            if (age >= place_bomb_time and action == action_t::bomb) continue;
                             commands[curself.id] = command;
                         }
                         shared_ptr<photon_t> npho = update_photon(*pho, commands);
@@ -696,7 +700,7 @@ public:
                 whole(sort, beam, [&](shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->score > b->score; }); // reversed
                 if (beam.size() > beam_width) beam.resize(beam_width);
                 for (auto & pho : beam) {
-                    if (pho->initial_command.action == action_t::bomb and pho->age <= 8) continue;
+                    if (pho->initial_command.action == action_t::bomb and age <= 8) continue;
                     command = pho->initial_command;
                     break;
                 }
