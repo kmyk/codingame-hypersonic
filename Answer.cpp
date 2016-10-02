@@ -81,6 +81,9 @@ namespace primitive {
     istream & operator >> (istream & in, entity_t & a) {
         return in >> (int &)(a.type) >> (int &)(a.owner) >> a.x >> a.y >> a.param1 >> a.param2;
     }
+    bool operator < (entity_t const & a, entity_t const & b) {
+        return make_tuple(a.type, a.owner, a.y, a.x, a.param1, a.param2) < make_tuple(b.type, b.owner, b.y, b.x, b.param1, b.param2);
+    }
     entity_t entity_cast(player_t const & a) { entity_t b; b.player = a; return b; }
     entity_t entity_cast(bomb_t   const & a) { entity_t b; b.bomb   = a; return b; }
     entity_t entity_cast(item_t   const & a) { entity_t b; b.item   = a; return b; }
@@ -559,6 +562,7 @@ struct photon_t {
     int box_acc;
     double bonus;
     double score; // cached
+    uint64_t signature;
 };
 double evaluate_photon(photon_t const & pho) { // very magic
     int h = pho.turn.config.height;
@@ -586,13 +590,39 @@ double evaluate_photon(photon_t const & pho) { // very magic
     score += pho.bonus;
     return score;
 }
+uint64_t signature_photon(photon_t const & pho) {
+    int h = pho.turn.config.height;
+    int w = pho.turn.config.width;
+    uint64_t p = 1e9+7;
+    uint64_t acc = 0;
+    auto f = [&](uint64_t x) { acc = acc * p + x; };
+    f(pho.age);
+    f(pho.box);
+    f(pho.range);
+    f(pho.bomb);
+    f(pho.box_acc);
+    repeat (y,h) repeat (x,w) {
+        f(min(bomb_time+1, pho.exptime[y][x].time));
+    }
+    for (entity_t const & ent : pho.turn.entities) {
+        f(int(ent.type));
+        f(int(ent.owner));
+        f(ent.y);
+        f(ent.x);
+        f(ent.param1);
+        f(ent.param2);
+    }
+    return acc;
+}
 photon_t initial_photon(turn_t const & turn) {
     photon_t pho = {};
     pho.turn = turn;
+    whole(sort, pho.turn.entities);
     pho.range = find_player(turn.entities, turn.config.self_id)->range;
     pho.bomb = total_bomb(turn.config.self_id, turn.entities);
     pho.exptime = exploded_time(turn);
     pho.score = evaluate_photon(pho);
+    pho.signature = signature_photon(pho);
     return pho;
 }
 shared_ptr<photon_t> update_photon(photon_t const & pho, map<player_id_t,command_t> const & commands) {
@@ -604,6 +634,7 @@ shared_ptr<photon_t> update_photon(photon_t const & pho, map<player_id_t,command
     npho->turn = *next_turn_ptr;
     assert (commands.count(self_id));
     if (pho.age == 0) npho->initial_command = commands.at(self_id);
+    whole(sort, npho->turn.entities);
     npho->age += 1;
     npho->box   += info.box[  int(self_id)];
     npho->range += info.range[int(self_id)];
@@ -611,6 +642,7 @@ shared_ptr<photon_t> update_photon(photon_t const & pho, map<player_id_t,command
     npho->exptime = exploded_time(npho->turn);
     npho->box_acc += pho.box;
     npho->score = evaluate_photon(*npho);
+    npho->signature = signature_photon(*npho);
     return npho;
 }
 
@@ -645,20 +677,20 @@ public:
         // to survive
         set<command_t> forbidden; {
             vector<vector<exploded_time_info_t> > exptime = exploded_time(turn);
-            vector<map<player_id_t,command_t> > commands_base(1);
+            vector<map<player_id_t,command_t> > command_one(1);
             map<point_t,bomb_t> bombs = select_bomb(turn.entities);
             for (auto & it : players) {
                 player_t & ent = it.second;
                 if (ent.id != self.id) {
                     if (ent.bomb == 0) continue;
                     if (bombs.count(point(ent))) continue;
-                    commands_base[0][ent.id] = create_command(ent, 0, 0, action_t::bomb);
+                    command_one[0][ent.id] = create_command(ent, 0, 0, action_t::bomb);
                 }
             }
-            forbidden = forbidden_commands(turn, commands_base);
+            forbidden = forbidden_commands(turn, command_one);
             if (forbidden.size() == 10) {
-                commands_base.clear();
-                forbidden = forbidden_commands(turn, commands_base);
+                command_one.clear();
+                forbidden = forbidden_commands(turn, command_one);
             }
             if (forbidden.size() == 10) {
                 forbidden.clear(); // TODO: しかたないから無視する ひとつ前の時点で気付くべきだったということ
@@ -670,11 +702,18 @@ public:
         command_t command = default_command(self); {
             vector<shared_ptr<photon_t> > beam;
             beam.emplace_back(make_shared<photon_t>(initial_photon(turn)));
-            const int beam_width = 48;
-            const int place_bomb_time = 10;
-            const int simulation_time = 10;
+            const int beam_width = 100;
+            const int point_beam_width = 6;
+            const int simulation_time = 8;
+            const int time_limit_margin = 10;
+            auto clock_check = [&]() {
+                high_resolution_clock::time_point clock_end = high_resolution_clock::now();
+                ll clock_count = duration_cast<milliseconds>(clock_end - clock_begin).count();
+                return clock_count < time_limit - time_limit_margin; // magic, randomness
+            };
             repeat (age, simulation_time) {
-                map<tuple<command_t,point_t>, shared_ptr<photon_t> > used;
+                set<uint64_t> used;
+                vector<vector<vector<shared_ptr<photon_t> > > > nbeam = vectors(vector<shared_ptr<photon_t> >(), height, width);
                 for (auto const & pho : beam) {
                     repeat (i,5) repeat (j,2) {
                         map<player_id_t,command_t> commands; {
@@ -682,41 +721,35 @@ public:
                             action_t action = j == 0 ? action_t::move : action_t::bomb;
                             command_t command = create_command(curself, dy[i], dx[i], action);
                             if (age == 0 and forbidden.count(command)) continue;
-                            if (age >= place_bomb_time and action == action_t::bomb) continue;
                             commands[curself.id] = command;
                         }
                         shared_ptr<photon_t> npho = update_photon(*pho, commands);
                         if (not npho) continue;
                         npho->bonus = uniform_real_distribution<double>(- 0.2, 0.2)(engine);
-                        player_t nxtself = *find_player(npho->turn.entities, npho->turn.config.self_id);
-                        auto signature = make_tuple(npho->initial_command, point(nxtself));
-                        if (used.count(signature) and used[signature]->score >= npho->score) continue;
-                        used[signature] = npho;
+                        if (used.count(npho->signature)) continue;
+                        used.insert(npho->signature);
+                        if (not is_survivable(self.id, npho->turn, npho->exptime)) continue;
+                        point_t p = point(*find_player(npho->turn.entities, npho->turn.config.self_id));
+                        nbeam[p.y][p.x].push_back(npho);
                     }
+                    if (not clock_check()) break;
                 }
+                if (not clock_check()) break;
                 beam.clear();
-                for (auto & it : used) beam.emplace_back(it.second);
-                whole(shuffle, beam, engine);
+                repeat (y,height) repeat (x,width) {
+                    whole(sort, nbeam[y][x], [&](shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->score > b->score; }); // reversed
+                    if (nbeam[y][x].size() > point_beam_width) nbeam[y][x].resize(point_beam_width);
+                    whole(copy, nbeam[y][x], back_inserter(beam));
+                }
                 whole(sort, beam, [&](shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->score > b->score; }); // reversed
                 if (beam.size() > beam_width) beam.resize(beam_width);
-                for (auto & pho : beam) {
-                    if (pho->initial_command.action == action_t::bomb and age <= 8) continue;
-                    command = pho->initial_command;
-                    break;
-                }
+                if (not beam.empty()) command = beam[0]->initial_command;
                 if (message.empty() and beam.empty()) {
                     if (age == 0) {
                         message = "Sayonara!";
                     } else {
                         message = "Aieee";
                     }
-                }
-                // time limit
-                const int time_limit_margin = 20;
-                high_resolution_clock::time_point clock_end = high_resolution_clock::now();
-                ll clock_count = duration_cast<milliseconds>(clock_end - clock_begin).count();
-                if (clock_count > time_limit - time_limit_margin) { // magic, randomness
-                    break;
                 }
             }
         }
