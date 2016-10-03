@@ -677,20 +677,20 @@ public:
         // to survive
         set<command_t> forbidden; {
             vector<vector<exploded_time_info_t> > exptime = exploded_time(turn);
-            vector<map<player_id_t,command_t> > command_one(1);
+            vector<map<player_id_t,command_t> > commands_base(1);
             map<point_t,bomb_t> bombs = select_bomb(turn.entities);
             for (auto & it : players) {
                 player_t & ent = it.second;
                 if (ent.id != self.id) {
                     if (ent.bomb == 0) continue;
                     if (bombs.count(point(ent))) continue;
-                    command_one[0][ent.id] = create_command(ent, 0, 0, action_t::bomb);
+                    commands_base[0][ent.id] = create_command(ent, 0, 0, action_t::bomb);
                 }
             }
-            forbidden = forbidden_commands(turn, command_one);
+            forbidden = forbidden_commands(turn, commands_base);
             if (forbidden.size() == 10) {
-                command_one.clear();
-                forbidden = forbidden_commands(turn, command_one);
+                commands_base.clear();
+                forbidden = forbidden_commands(turn, commands_base);
             }
             if (forbidden.size() == 10) {
                 forbidden.clear(); // TODO: しかたないから無視する ひとつ前の時点で気付くべきだったということ
@@ -705,7 +705,7 @@ public:
             const int beam_width = 100;
             const int point_beam_width = 6;
             const int simulation_time = 8;
-            const int time_limit_margin = 10;
+            const int time_limit_margin = 5;
             auto clock_check = [&]() {
                 high_resolution_clock::time_point clock_end = high_resolution_clock::now();
                 ll clock_count = duration_cast<milliseconds>(clock_end - clock_begin).count();
