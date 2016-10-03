@@ -5,11 +5,7 @@
 #include <array>
 #include <set>
 #include <map>
-#include <queue>
-#include <tuple>
 #include <random>
-#include <unordered_set>
-#include <unordered_map>
 #include <memory>
 #include <functional>
 #include <chrono>
@@ -17,16 +13,11 @@
 #include <cassert>
 #define repeat(i,n) for (int i = 0; (i) < (n); ++(i))
 #define repeat_from(i,m,n) for (int i = (m); (i) < (n); ++(i))
-#define repeat_reverse(i,n) for (int i = (n)-1; (i) >= 0; --(i))
-#define repeat_from_reverse(i,m,n) for (int i = (n)-1; (i) >= (m); --(i))
 #define whole(f,x,...) ([&](decltype((x)) y) { return (f)(begin(y), end(y), ## __VA_ARGS__); })(x)
 typedef long long ll;
 using namespace std;
 using namespace std::chrono;
-template <class T> void setmax(T & a, T const & b) { if (a < b) a = b; }
-template <class T> void setmin(T & a, T const & b) { if (b < a) a = b; }
 template <typename T> vector<vector<T> > vectors(T a, size_t h, size_t w) { return vector<vector<T> >(h, vector<T>(w, a)); }
-template <typename T> T input(istream & in) { T a; in >> a; return a; }
 const int dy[] = { -1, 1, 0, 0, 0 };
 const int dx[] = { 0, 0, 1, -1, 0 };
 bool is_on_field(int y, int x, int h, int w) { return 0 <= y and y < h and 0 <= x and x < w; }
@@ -182,7 +173,7 @@ namespace primitive {
         return command;
     }
 
-    const int time_limit = 100;
+    const int time_limit = 100; // msec
 }
 using namespace primitive;
 
@@ -209,34 +200,6 @@ multimap<point_t,entity_t> entity_multimap(vector<entity_t> const & entities) {
         ent_at.emplace(point(ent), ent);
     }
     return ent_at;
-}
-
-vector<vector<int> > distance_field(int sy, int sx, multimap<point_t,entity_t> const & ent_at, vector<vector<cell_t> > const & field) {
-    int h = field.size(), w = field.front().size();
-    vector<vector<int> > dist = vectors(inf, h, w);
-    queue<point_t> que;
-    dist[sy][sx] = 0;
-    que.push(point(sy, sx));
-    while (not que.empty()) {
-        point_t p = que.front(); que.pop();
-        bool obstruction = false;
-        if (field[p.y][p.x] != cell_t::empty) obstruction = true;
-        for (auto rng = ent_at.equal_range(p); rng.first != rng.second; ++ rng.first) {
-            auto & ent = rng.first->second;
-            if (ent.type == entity_type_t::bomb) obstruction = true;
-        }
-        if (obstruction) continue;
-        repeat (i,4) {
-            int ny = p.y + dy[i];
-            int nx = p.x + dx[i];
-            if (not is_on_field(ny, nx, h, w)) continue;
-            if (dist[ny][nx] != inf) continue;
-            if (field[ny][nx] == cell_t::wall) continue;
-            dist[ny][nx] = dist[p.y][p.x] + 1;
-            que.push(point(ny, nx));
-        }
-    }
-    return dist;
 }
 
 struct exploded_time_info_t { int time; bool owner[player_number]; };
