@@ -613,15 +613,10 @@ class AI {
 private:
     config_t config;
     vector<turn_t> turns; // history
-    turn_t turn; // current
     vector<output_t> outputs;
 
 private:
     default_random_engine engine;
-    int randint(int a, int b) {
-        uniform_int_distribution<int> dist(a, b);
-        return dist(engine);
-    }
 
 public:
     AI(config_t const & a_config) {
